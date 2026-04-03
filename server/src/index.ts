@@ -1,10 +1,12 @@
 import "dotenv/config";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import ratePusher from "./plugins/ratePusher";
 
 const app = Fastify({ logger: true });
 
 app.register(cors);
+app.register(ratePusher);
 
 app.get("/health", async () => {
   return { status: "ok" };
