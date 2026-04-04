@@ -23,8 +23,8 @@ import {
   ERC20_ABI,
 } from "../contracts";
 import { formatUnits, parseUnits, keccak256, encodePacked } from "viem";
-import { getInviteCode, saveInviteCode } from "../storage";
-import * as Linking from "expo-linking";
+import { getInviteCode, saveInviteCode, deleteInviteCode } from "../storage";
+
 
 type Tab = "pot" | "split" | "members";
 
@@ -44,8 +44,9 @@ type RequestData = {
   amount: bigint;
   description: string;
   approvalCount: number;
+  rejectionCount: number;
   approvalsNeeded: number;
-  status: number;
+  status: number; // 0=Pending, 1=Approved, 2=Rejected, 3=Cancelled
   thresholdMet: boolean;
 };
 
@@ -125,7 +126,7 @@ export default function GroupDetailScreen() {
       });
       const reqs: RequestData[] = [];
       for (let i = 0; i < Number(count); i++) {
-        const { requester, amount, description, approvalCount, approvalsNeeded, status, thresholdMet } =
+        const { requester, amount, description, approvalCount, rejectionCount, approvalsNeeded, status, thresholdMet } =
           await client.readContract({
             address: CONTRACTS.GROUP_POT,
             abi: GROUP_POT_ABI,
@@ -138,6 +139,7 @@ export default function GroupDetailScreen() {
           amount,
           description,
           approvalCount: Number(approvalCount),
+          rejectionCount: Number(rejectionCount),
           approvalsNeeded: Number(approvalsNeeded),
           status,
           thresholdMet,
@@ -230,19 +232,19 @@ export default function GroupDetailScreen() {
     }
   };
 
-  const handleApprove = async (requestId: number) => {
+  const handleVote = async (requestId: number, approve: boolean) => {
     setTxLoading(true);
     try {
       const walletClient = await getWalletClient();
       await walletClient.writeContract({
         address: CONTRACTS.GROUP_POT,
         abi: GROUP_POT_ABI,
-        functionName: "approveRequest",
-        args: [BigInt(groupId), BigInt(requestId)],
+        functionName: "voteOnRequest",
+        args: [BigInt(groupId), BigInt(requestId), approve],
       });
       loadGroup();
     } catch (e: any) {
-      Alert.alert("Error", e.message ?? "Approve failed");
+      Alert.alert("Error", e.message ?? (approve ? "Approve failed" : "Reject failed"));
     } finally {
       setTxLoading(false);
     }
@@ -329,10 +331,13 @@ export default function GroupDetailScreen() {
 
   const confirmInviteCode = async () => {
     if (!pendingCode) return;
+    const code = pendingCode;
+    // Close the modal first so Dynamic's transaction drawer appears on top
+    setInviteModalVisible(false);
     try {
       setTxLoading(true);
       const walletClient = await getWalletClient();
-      const hash = keccak256(encodePacked(["string"], [pendingCode]));
+      const hash = keccak256(encodePacked(["string"], [code]));
       const txHash = await walletClient.writeContract({
         address: CONTRACTS.GROUP_POT,
         abi: GROUP_POT_ABI,
@@ -340,11 +345,15 @@ export default function GroupDetailScreen() {
         args: [BigInt(groupId), hash],
       });
       await getPublicClient().waitForTransactionReceipt({ hash: txHash });
-      await saveInviteCode(groupId, pendingCode);
-      setStoredInviteCode(pendingCode);
+      await saveInviteCode(groupId, code);
+      setStoredInviteCode(code);
       setPendingCode(null);
+      // Reopen modal to show the confirmed code
+      setInviteModalVisible(true);
     } catch (e: any) {
       Alert.alert("Error", e.message ?? "Failed to set invite code");
+      // Reopen modal so user can retry
+      setInviteModalVisible(true);
     } finally {
       setTxLoading(false);
     }
@@ -374,7 +383,7 @@ export default function GroupDetailScreen() {
               });
               await getPublicClient().waitForTransactionReceipt({ hash: txHash });
               // Clear stored code
-              await saveInviteCode(groupId, "");
+              await deleteInviteCode(groupId);
               Alert.alert("Locked", "Group is now locked.");
             } catch (e: any) {
               Alert.alert("Error", e.message ?? "Failed to lock group");
@@ -416,6 +425,7 @@ export default function GroupDetailScreen() {
   }
 
   const pendingRequests = requests.filter((r) => r.status === 0);
+  const rejectedRequests = requests.filter((r) => r.status === 2);
   const hasDebt = balances.some((b) => b.balance < 0n);
 
   return (
@@ -544,18 +554,55 @@ export default function GroupDetailScreen() {
                     </Text>
                     <Text className="text-sm text-gray-500">
                       {r.approvalCount}/{r.approvalsNeeded} approvals
+                      {r.rejectionCount > 0
+                        ? ` · ${r.rejectionCount}/${r.approvalsNeeded} rejections`
+                        : ""}
                       {r.thresholdMet ? " · Awaiting funds" : ""}
                     </Text>
                     {r.requester.toLowerCase() !== userAddress && (
-                      <Pressable
-                        onPress={() => handleApprove(r.id)}
-                        className="bg-black rounded-lg py-2 items-center mt-2"
-                      >
-                        <Text className="text-white font-semibold text-sm">
-                          Approve
-                        </Text>
-                      </Pressable>
+                      <View className="flex-row gap-2 mt-2">
+                        <Pressable
+                          onPress={() => handleVote(r.id, true)}
+                          className="flex-1 bg-black rounded-lg py-2 items-center"
+                        >
+                          <Text className="text-white font-semibold text-sm">
+                            Approve
+                          </Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => handleVote(r.id, false)}
+                          className="flex-1 border border-red-300 rounded-lg py-2 items-center"
+                        >
+                          <Text className="text-red-500 font-semibold text-sm">
+                            Reject
+                          </Text>
+                        </Pressable>
+                      </View>
                     )}
+                  </View>
+                ))}
+              </>
+            )}
+
+            {/* Rejected Requests */}
+            {rejectedRequests.length > 0 && (
+              <>
+                <Text className="font-semibold text-gray-900 mb-2">
+                  Rejected Requests
+                </Text>
+                {rejectedRequests.map((r) => (
+                  <View key={r.id} className="bg-red-50 rounded-xl p-4 mb-2 opacity-70">
+                    <Text className="font-medium text-gray-900">
+                      {r.description}
+                    </Text>
+                    <Text className="text-sm text-gray-500">
+                      {formatUnits(r.amount, 6)}{" "}
+                      {currencySymbol(group.baseCurrency)} ·{" "}
+                      {shortAddr(r.requester)}
+                    </Text>
+                    <Text className="text-sm text-red-500">
+                      Disputed · {r.rejectionCount}/{r.approvalsNeeded} rejections
+                    </Text>
                   </View>
                 ))}
               </>
@@ -758,6 +805,20 @@ export default function GroupDetailScreen() {
                 <Text className="text-white text-lg font-semibold">
                   Share via Message
                 </Text>
+              </Pressable>
+
+              {/* Regenerate Code */}
+              <Pressable
+                onPress={() => {
+                  const chars = "abcdefghijkmnpqrstuvwxyz23456789";
+                  let c = "";
+                  for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
+                  setPendingCode(c);
+                  setStoredInviteCode(null);
+                }}
+                className="rounded-xl py-4 items-center border border-gray-200"
+              >
+                <Text className="text-gray-700 text-base">Regenerate Code</Text>
               </Pressable>
             </>
           )}

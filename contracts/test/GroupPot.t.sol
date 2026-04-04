@@ -255,11 +255,11 @@ contract GroupPotTest is Test {
 
         // Bob approves (1/2)
         vm.prank(bob);
-        pot.approveRequest(gid, rid);
+        pot.voteOnRequest(gid, rid, true);
 
         // Carol approves (2/2) — should auto-release
         vm.prank(carol);
-        pot.approveRequest(gid, rid);
+        pot.voteOnRequest(gid, rid, true);
 
         // Alice should have received 50 USDC
         assertEq(usdc.balanceOf(alice) - aliceBefore, 50e6);
@@ -282,9 +282,9 @@ contract GroupPotTest is Test {
 
         // Both approve, but no funds
         vm.prank(bob);
-        pot.approveRequest(gid, rid);
+        pot.voteOnRequest(gid, rid, true);
         vm.prank(carol);
-        pot.approveRequest(gid, rid);
+        pot.voteOnRequest(gid, rid, true);
 
         // Should still be pending (thresholdMet but no funds)
         GroupPot.ReimbursementInfo memory info = pot.getRequestInfo(gid, rid);
@@ -300,9 +300,9 @@ contract GroupPotTest is Test {
         uint256 rid = pot.requestReimbursement(gid, 50e6, "Hotel");
 
         vm.prank(bob);
-        pot.approveRequest(gid, rid);
+        pot.voteOnRequest(gid, rid, true);
         vm.prank(carol);
-        pot.approveRequest(gid, rid);
+        pot.voteOnRequest(gid, rid, true);
 
         // Now deposit funds
         vm.prank(bob);
@@ -318,29 +318,29 @@ contract GroupPotTest is Test {
         assertEq(uint8(info.status), uint8(GroupPot.Status.Approved));
     }
 
-    function test_ApproveRequest_RevertSelfApprove() public {
+    function test_VoteOnRequest_RevertSelfVote() public {
         uint256 gid = _createGroupWith3Members();
 
         vm.prank(alice);
         uint256 rid = pot.requestReimbursement(gid, 50e6, "Hotel");
 
         vm.prank(alice);
-        vm.expectRevert("Cannot self-approve");
-        pot.approveRequest(gid, rid);
+        vm.expectRevert("Cannot vote on own request");
+        pot.voteOnRequest(gid, rid, true);
     }
 
-    function test_ApproveRequest_RevertDoubleApprove() public {
+    function test_VoteOnRequest_RevertDoubleVote() public {
         uint256 gid = _createGroupWith3Members();
 
         vm.prank(alice);
         uint256 rid = pot.requestReimbursement(gid, 50e6, "Hotel");
 
         vm.prank(bob);
-        pot.approveRequest(gid, rid);
+        pot.voteOnRequest(gid, rid, true);
 
         vm.prank(bob);
-        vm.expectRevert("Already approved");
-        pot.approveRequest(gid, rid);
+        vm.expectRevert("Already voted");
+        pot.voteOnRequest(gid, rid, true);
     }
 
     function test_CancelRequest() public {
@@ -389,7 +389,7 @@ contract GroupPotTest is Test {
         // Bob approves — should auto-release
         uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(bob);
-        pot.approveRequest(gid, rid);
+        pot.voteOnRequest(gid, rid, true);
 
         assertEq(usdc.balanceOf(alice) - aliceBefore, 50e6);
     }
@@ -459,9 +459,9 @@ contract GroupPotTest is Test {
         vm.prank(alice);
         uint256 rid = pot.requestReimbursement(gid, 50e6, "Hotel");
         vm.prank(bob);
-        pot.approveRequest(gid, rid);
+        pot.voteOnRequest(gid, rid, true);
         vm.prank(carol);
-        pot.approveRequest(gid, rid);
+        pot.voteOnRequest(gid, rid, true);
 
         // Request was released since pot had funds — verify
         GroupPot.ReimbursementInfo memory info = pot.getRequestInfo(gid, rid);
@@ -495,5 +495,96 @@ contract GroupPotTest is Test {
         vm.prank(dave);
         vm.expectRevert("Group is closed");
         pot.joinGroup(gid, INVITE_CODE);
+    }
+
+    // ─── Dispute / Rejection ────────────────────────────────────
+
+    function test_RejectRequest_AutoRejects() public {
+        uint256 gid = _createGroupWith3Members();
+
+        vm.prank(alice);
+        pot.deposit(gid, 200e6, address(usdc));
+
+        vm.prank(alice);
+        uint256 rid = pot.requestReimbursement(gid, 50e6, "Hotel");
+
+        // Bob rejects (1/2)
+        vm.prank(bob);
+        pot.voteOnRequest(gid, rid, false);
+
+        GroupPot.ReimbursementInfo memory info = pot.getRequestInfo(gid, rid);
+        assertEq(uint8(info.status), uint8(GroupPot.Status.Pending));
+        assertEq(info.rejectionCount, 1);
+
+        // Carol rejects (2/2) — should auto-reject
+        vm.prank(carol);
+        pot.voteOnRequest(gid, rid, false);
+
+        info = pot.getRequestInfo(gid, rid);
+        assertEq(uint8(info.status), uint8(GroupPot.Status.Rejected));
+        assertEq(info.rejectionCount, 2);
+    }
+
+    function test_RejectRequest_ApproveWinsRace() public {
+        uint256 gid = _createGroupWith3Members();
+
+        vm.prank(alice);
+        pot.deposit(gid, 200e6, address(usdc));
+
+        vm.prank(alice);
+        uint256 rid = pot.requestReimbursement(gid, 50e6, "Hotel");
+
+        // Bob rejects, Carol approves — neither threshold met yet (need 2)
+        vm.prank(bob);
+        pot.voteOnRequest(gid, rid, false);
+        vm.prank(carol);
+        pot.voteOnRequest(gid, rid, true);
+
+        // Add dave to cast the deciding vote
+        address dave = makeAddr("dave");
+        vm.prank(dave);
+        pot.joinGroup(gid, INVITE_CODE);
+
+        // New request with 4 members (need 2 of 3 non-requesters)
+        vm.prank(alice);
+        uint256 rid2 = pot.requestReimbursement(gid, 30e6, "Taxi");
+
+        vm.prank(bob);
+        pot.voteOnRequest(gid, rid2, true);
+        uint256 aliceBefore = usdc.balanceOf(alice);
+        vm.prank(carol);
+        pot.voteOnRequest(gid, rid2, true);
+
+        // Should be approved and released
+        GroupPot.ReimbursementInfo memory info = pot.getRequestInfo(gid, rid2);
+        assertEq(uint8(info.status), uint8(GroupPot.Status.Approved));
+        assertEq(usdc.balanceOf(alice) - aliceBefore, 30e6);
+    }
+
+    function test_RejectRequest_CannotVoteTwice() public {
+        uint256 gid = _createGroupWith3Members();
+
+        vm.prank(alice);
+        uint256 rid = pot.requestReimbursement(gid, 50e6, "Hotel");
+
+        // Bob rejects
+        vm.prank(bob);
+        pot.voteOnRequest(gid, rid, false);
+
+        // Bob tries to also approve — should fail
+        vm.prank(bob);
+        vm.expectRevert("Already voted");
+        pot.voteOnRequest(gid, rid, true);
+    }
+
+    function test_RejectRequest_RequesterCannotReject() public {
+        uint256 gid = _createGroupWith3Members();
+
+        vm.prank(alice);
+        uint256 rid = pot.requestReimbursement(gid, 50e6, "Hotel");
+
+        vm.prank(alice);
+        vm.expectRevert("Cannot vote on own request");
+        pot.voteOnRequest(gid, rid, false);
     }
 }

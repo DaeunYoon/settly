@@ -10,13 +10,15 @@ import {IGroupPot} from "./interfaces/IGroupPot.sol";
 contract GroupPot is IGroupPot, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    enum Status { Pending, Approved, Cancelled }
+    enum Status { Pending, Approved, Rejected, Cancelled }
+    enum Vote { None, Approve, Reject }
 
     struct ReimbursementRequest {
         address requester;
         uint256 amount;
         string description;
         uint256 approvalCount;
+        uint256 rejectionCount;
         uint256 approvalsNeeded;
         Status status;
         bool thresholdMet;
@@ -52,6 +54,7 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
         uint256 amount;
         string description;
         uint256 approvalCount;
+        uint256 rejectionCount;
         uint256 approvalsNeeded;
         Status status;
         bool thresholdMet;
@@ -73,8 +76,8 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
     mapping(uint256 => mapping(address => uint256)) private contributions;
     // groupId => requestId => ReimbursementRequest
     mapping(uint256 => mapping(uint256 => ReimbursementRequest)) private requests;
-    // groupId => requestId => approver => hasApproved
-    mapping(uint256 => mapping(uint256 => mapping(address => bool))) private hasApproved;
+    // groupId => requestId => voter => Vote
+    mapping(uint256 => mapping(uint256 => mapping(address => Vote))) private votes;
     // groupId => member => hasVotedWithdraw
     mapping(uint256 => mapping(address => bool)) private hasVotedWithdraw;
 
@@ -84,7 +87,9 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
     event Deposited(uint256 indexed groupId, address member, uint256 amount, address token, uint256 convertedAmount);
     event ReimbursementRequested(uint256 indexed groupId, uint256 requestId, address requester, uint256 amount, string description);
     event RequestApproved(uint256 indexed groupId, uint256 requestId, address approver, uint256 currentApprovals, uint256 needed);
+    event RequestRejected(uint256 indexed groupId, uint256 requestId, address rejector, uint256 currentRejections, uint256 needed);
     event FundsReleased(uint256 indexed groupId, uint256 requestId, address requester, uint256 amount);
+    event RequestDisputed(uint256 indexed groupId, uint256 requestId, uint256 rejections);
     event RequestCancelled(uint256 indexed groupId, uint256 requestId);
     event PotClosed(uint256 indexed groupId);
 
@@ -193,24 +198,35 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
         emit ReimbursementRequested(groupId, requestId, msg.sender, amount, description);
     }
 
-    function approveRequest(
+    function voteOnRequest(
         uint256 groupId,
-        uint256 requestId
+        uint256 requestId,
+        bool approve
     ) external onlyMember(groupId) groupOpen(groupId) nonReentrant {
         ReimbursementRequest storage r = requests[groupId][requestId];
         require(r.requester != address(0), "Request does not exist");
         require(r.status == Status.Pending, "Not pending");
-        require(msg.sender != r.requester, "Cannot self-approve");
-        require(!hasApproved[groupId][requestId][msg.sender], "Already approved");
+        require(msg.sender != r.requester, "Cannot vote on own request");
+        require(votes[groupId][requestId][msg.sender] == Vote.None, "Already voted");
 
-        hasApproved[groupId][requestId][msg.sender] = true;
-        r.approvalCount++;
+        if (approve) {
+            votes[groupId][requestId][msg.sender] = Vote.Approve;
+            r.approvalCount++;
+            emit RequestApproved(groupId, requestId, msg.sender, r.approvalCount, r.approvalsNeeded);
 
-        emit RequestApproved(groupId, requestId, msg.sender, r.approvalCount, r.approvalsNeeded);
+            if (r.approvalCount >= r.approvalsNeeded) {
+                r.thresholdMet = true;
+                _tryRelease(groupId, requestId);
+            }
+        } else {
+            votes[groupId][requestId][msg.sender] = Vote.Reject;
+            r.rejectionCount++;
+            emit RequestRejected(groupId, requestId, msg.sender, r.rejectionCount, r.approvalsNeeded);
 
-        if (r.approvalCount >= r.approvalsNeeded) {
-            r.thresholdMet = true;
-            _tryRelease(groupId, requestId);
+            if (r.rejectionCount >= r.approvalsNeeded) {
+                r.status = Status.Rejected;
+                emit RequestDisputed(groupId, requestId, r.rejectionCount);
+            }
         }
     }
 
@@ -292,6 +308,7 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
             amount: r.amount,
             description: r.description,
             approvalCount: r.approvalCount,
+            rejectionCount: r.rejectionCount,
             approvalsNeeded: r.approvalsNeeded,
             status: r.status,
             thresholdMet: r.thresholdMet,

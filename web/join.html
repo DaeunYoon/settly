@@ -12,11 +12,14 @@
     .subtitle { color: #666; margin-bottom: 32px; }
     .info { background: #f5f5f5; border-radius: 16px; padding: 24px; margin-bottom: 24px; }
     .label { font-size: 12px; color: #999; text-transform: uppercase; margin-bottom: 4px; }
-    .value { font-size: 24px; font-weight: 700; letter-spacing: 2px; margin-bottom: 16px; }
+    .value { font-size: 24px; font-weight: 700; letter-spacing: 2px; margin-bottom: 16px; cursor: pointer; position: relative; }
     .value:last-child { margin-bottom: 0; }
-    .btn { display: block; background: #111; color: #fff; text-decoration: none; padding: 16px 32px; border-radius: 12px; font-size: 18px; font-weight: 600; margin-bottom: 12px; }
-    .btn-secondary { background: #f5f5f5; color: #111; border: 1px solid #e5e5e5; }
+    .btn { display: block; background: #111; color: #fff; text-decoration: none; padding: 16px 32px; border-radius: 12px; font-size: 18px; font-weight: 600; margin-bottom: 12px; border: none; cursor: pointer; width: 100%; }
     .note { color: #999; font-size: 14px; margin-top: 16px; }
+    .copied { color: #22c55e; font-size: 12px; margin-top: 4px; }
+    .steps { text-align: left; background: #f5f5f5; border-radius: 16px; padding: 24px; margin-top: 24px; }
+    .steps li { color: #666; margin-bottom: 8px; font-size: 15px; }
+    .steps li:last-child { margin-bottom: 0; }
   </style>
 </head>
 <body>
@@ -26,32 +29,62 @@
 
     <div class="info">
       <div class="label">Group ID</div>
-      <div class="value" id="groupId">—</div>
+      <div class="value" id="groupId" onclick="copy('groupId')">—</div>
       <div class="label">Invite Code</div>
-      <div class="value" id="inviteCode">—</div>
+      <div class="value" id="inviteCode" onclick="copy('inviteCode')">—</div>
     </div>
 
-    <a class="btn" id="openApp" href="#">Open in Settly</a>
+    <a class="btn" id="openLink" href="#" style="display:block;text-align:center;">Open in Settly</a>
+    <button class="btn" style="background:#555" onclick="copyAll()">Copy Details</button>
+    <div class="copied" id="copiedMsg" style="display:none">Copied to clipboard!</div>
 
-    <p class="note">Don't have Settly? Open the app, tap "Join Group", and enter the details above.</p>
+    <ol class="steps">
+      <li>Tap <strong>Open in Settly</strong> above</li>
+      <li>If the app doesn't open, copy the details and enter them manually</li>
+    </ol>
+
+    <p class="note" id="devNote" style="display:none; color:#c55; margin-top:12px;"></p>
+    <p class="note">Tap any value to copy it.</p>
   </div>
 
   <script>
-    const parts = window.location.pathname.split('/').filter(Boolean);
-    // URL: /join/{groupId}/{inviteCode}
-    const groupId = parts[1] || '';
-    const inviteCode = decodeURIComponent(parts[2] || '');
+    var parts = window.location.pathname.split('/').filter(Boolean);
+    var groupId = parts[1] || '';
+    var inviteCode = decodeURIComponent(parts[2] || '');
 
     document.getElementById('groupId').textContent = groupId || '—';
     document.getElementById('inviteCode').textContent = inviteCode || '—';
 
-    const deepLink = `settly://join/${groupId}/${encodeURIComponent(inviteCode)}`;
-    document.getElementById('openApp').href = deepLink;
-
-    // Try to auto-open the app
-    if (groupId && inviteCode) {
-      window.location.href = deepLink;
+    function showCopied() {
+      var msg = document.getElementById('copiedMsg');
+      msg.style.display = 'block';
+      setTimeout(function() { msg.style.display = 'none'; }, 2000);
     }
+
+    function copy(id) {
+      var text = document.getElementById(id).textContent;
+      navigator.clipboard.writeText(text).then(showCopied);
+    }
+
+    function copyAll() {
+      var text = 'Group ID: ' + groupId + '\nInvite Code: ' + inviteCode;
+      navigator.clipboard.writeText(text).then(showCopied);
+    }
+
+    // Build deep link URLs with actual invite code from the URL path
+    var joinPath = 'join/' + groupId + '/' + encodeURIComponent(inviteCode);
+    var EXPO_HOST = '10.105.177.151:8081';
+    var expUrl = 'exp://' + EXPO_HOST + '/--/' + joinPath;
+    var settlyUrl = 'settly://' + joinPath;
+
+    var link = document.getElementById('openLink');
+    link.href = expUrl;
+
+    // Show both URLs for debugging
+    var note = document.getElementById('devNote');
+    note.style.display = 'block';
+    note.innerHTML = 'Expo Go: <a href="' + expUrl + '" style="color:#c55;word-break:break-all;">' + expUrl + '</a>'
+      + '<br><br>Production: <a href="' + settlyUrl + '" style="color:#c55;word-break:break-all;">' + settlyUrl + '</a>';
   </script>
 </body>
 </html>

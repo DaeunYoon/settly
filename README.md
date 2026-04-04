@@ -68,7 +68,15 @@ cp .env.example .env
 npm run dev
 ```
 
-Server runs at `http://localhost:3000`. Health check: `GET /health`.
+Server runs at `http://localhost:3000`.
+
+**Endpoints:**
+- `GET /health` — health check
+- `GET /api/rate` — current FX rate
+- `POST /api/rate/refresh` — force rate push to FXOracle
+- `PUT /api/invite/:groupId` — store invite code `{ "code": "abc123" }`
+- `GET /api/invite/:groupId` — get invite code
+- `DELETE /api/invite/:groupId` — delete invite code (lock group)
 
 ### Smart Contracts
 
