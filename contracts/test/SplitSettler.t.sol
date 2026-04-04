@@ -187,9 +187,9 @@ contract SplitSettlerTest is Test {
         assertEq(settlements.length, 0);
     }
 
-    // ─── Settle Up ───────────────────────────────────────────────
+    // ─── Settle ──────────────────────────────────────────────────
 
-    function test_SettleUp_FullFlow() public {
+    function test_Settle_FullFlow() public {
         address[] memory split = new address[](3);
         split[0] = alice;
         split[1] = bob;
@@ -202,16 +202,20 @@ contract SplitSettlerTest is Test {
         uint256 aliceBefore = usdc.balanceOf(alice);
         uint256 carolBefore = usdc.balanceOf(carol);
 
+        // Alice settles her debt to Bob
         vm.prank(alice);
-        settler.settleUp(gid);
+        settler.settle(gid, bob);
 
-        // Alice paid 20 to Bob, Carol paid 20 to Bob
+        // Carol settles her debt to Bob
+        vm.prank(carol);
+        settler.settle(gid, bob);
+
         assertEq(usdc.balanceOf(alice), aliceBefore - 20e6);
         assertEq(usdc.balanceOf(carol), carolBefore - 20e6);
         assertEq(usdc.balanceOf(bob), bobBefore + 40e6);
     }
 
-    function test_SettleUp_ClearsState() public {
+    function test_Settle_ClearsStateWhenAllSettled() public {
         address[] memory split = new address[](3);
         split[0] = alice;
         split[1] = bob;
@@ -221,7 +225,9 @@ contract SplitSettlerTest is Test {
         settler.addExpense(gid, 60e6, "Taxi", split);
 
         vm.prank(alice);
-        settler.settleUp(gid);
+        settler.settle(gid, bob);
+        vm.prank(carol);
+        settler.settle(gid, bob);
 
         // Expenses cleared
         assertEq(settler.getExpenseCount(gid), 0);
@@ -233,18 +239,64 @@ contract SplitSettlerTest is Test {
         }
     }
 
-    function test_SettleUp_RevertNothingToSettle() public {
+    function test_Settle_PartialDoesNotClearExpenses() public {
+        address[] memory split = new address[](3);
+        split[0] = alice;
+        split[1] = bob;
+        split[2] = carol;
+
+        vm.prank(bob);
+        settler.addExpense(gid, 60e6, "Taxi", split);
+
+        // Only Alice settles — Carol still owes
         vm.prank(alice);
-        vm.expectRevert("Nothing to settle");
-        settler.settleUp(gid);
+        settler.settle(gid, bob);
+
+        // Expenses NOT cleared (Carol still has debt)
+        assertEq(settler.getExpenseCount(gid), 1);
     }
 
-    function test_SettleUp_RevertNonMember() public {
+    function test_Settle_RevertNoDebt() public {
+        vm.prank(alice);
+        vm.expectRevert("No debt to settle");
+        settler.settle(gid, bob);
+    }
+
+    function test_Settle_RevertNonMember() public {
         address outsider = makeAddr("outsider");
 
         vm.prank(outsider);
         vm.expectRevert("Not a member");
-        settler.settleUp(gid);
+        settler.settle(gid, bob);
+    }
+
+    function test_Settle_RevertSelfSettle() public {
+        address[] memory split = new address[](3);
+        split[0] = alice;
+        split[1] = bob;
+        split[2] = carol;
+
+        vm.prank(bob);
+        settler.addExpense(gid, 60e6, "Taxi", split);
+
+        vm.prank(alice);
+        vm.expectRevert("Cannot settle with self");
+        settler.settle(gid, alice);
+    }
+
+    function test_Settle_RevertRecipientNotOwed() public {
+        address[] memory split = new address[](3);
+        split[0] = alice;
+        split[1] = bob;
+        split[2] = carol;
+
+        vm.prank(bob);
+        settler.addExpense(gid, 60e6, "Taxi", split);
+
+        // Alice owes, Carol owes — Alice tries to settle with Carol (who also owes)
+        vm.prank(alice);
+        vm.expectRevert("Recipient not owed anything");
+        settler.settle(gid, carol);
     }
 
     // ─── Multiple Expenses ───────────────────────────────────────
@@ -273,12 +325,12 @@ contract SplitSettlerTest is Test {
             else if (members[i] == carol) assertEq(bals[i], int256(-30e6));
         }
 
-        // Settle: Carol pays 30 to Bob
+        // Settle: only Carol has debt, she pays 30 to Bob
         uint256 bobBefore = usdc.balanceOf(bob);
         uint256 carolBefore = usdc.balanceOf(carol);
 
-        vm.prank(alice);
-        settler.settleUp(gid);
+        vm.prank(carol);
+        settler.settle(gid, bob);
 
         assertEq(usdc.balanceOf(bob), bobBefore + 30e6);
         assertEq(usdc.balanceOf(carol), carolBefore - 30e6);

@@ -15,6 +15,7 @@ import {
   SPLIT_SETTLER_ABI,
 } from "../contracts";
 import { dynamicClient } from "../dynamic-client";
+import { useDynamic } from "../hooks/useDynamic";
 import { useUserGroups } from "../hooks/useUserGroups";
 
 const POLLING_INTERVAL = 4_000;
@@ -157,6 +158,21 @@ export function ContractEventProvider({
             "New Expense",
             `${shortAddr(args.paidBy)} added expense: ${args.description} (${amount})`
           );
+          break;
+        }
+        case "Settled": {
+          const settledAmt = formatUnits(args.amount ?? 0n, 6);
+          if (args.to?.toLowerCase() === userAddress) {
+            Alert.alert(
+              "Settlement Received",
+              `${shortAddr(args.from)} paid you ${settledAmt}`
+            );
+          } else if (args.from?.toLowerCase() !== userAddress) {
+            Alert.alert(
+              "Settlement",
+              `${shortAddr(args.from)} settled ${settledAmt} with ${shortAddr(args.to)}`
+            );
+          }
           break;
         }
         case "FundsReleased": {

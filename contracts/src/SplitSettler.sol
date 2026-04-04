@@ -33,7 +33,7 @@ contract SplitSettler is ReentrancyGuard {
     mapping(uint256 => mapping(address => int256)) private balances;
 
     event ExpenseAdded(uint256 indexed groupId, uint256 expenseId, address paidBy, uint256 amount, string description);
-    event SettledUp(uint256 indexed groupId);
+    event Settled(uint256 indexed groupId, address indexed from, address indexed to, uint256 amount);
 
     constructor(address _usdc, address _eurc, address _groupPot) {
         require(_usdc != address(0) && _eurc != address(0) && _groupPot != address(0), "Zero address");
@@ -166,31 +166,44 @@ contract SplitSettler is ReentrancyGuard {
         return result;
     }
 
-    function settleUp(uint256 groupId) external nonReentrant {
+    /// @notice Caller settles their own debt to a specific creditor.
+    ///         Transfers min(caller's debt, recipient's credit) in base currency.
+    function settle(uint256 groupId, address to) external nonReentrant {
         require(groupPot.isMember(groupId, msg.sender), "Not a member");
+        require(msg.sender != to, "Cannot settle with self");
 
-        Settlement[] memory settlements = calculateSettlements(groupId);
-        require(settlements.length > 0, "Nothing to settle");
+        int256 senderBal = balances[groupId][msg.sender];
+        int256 recipientBal = balances[groupId][to];
+
+        require(senderBal < 0, "No debt to settle");
+        require(recipientBal > 0, "Recipient not owed anything");
+
+        uint256 debt = uint256(-senderBal);
+        uint256 credit = uint256(recipientBal);
+        uint256 amount = debt < credit ? debt : credit;
 
         address baseCurrency = groupPot.getBaseCurrency(groupId);
         require(baseCurrency == usdc || baseCurrency == eurc, "Invalid currency");
 
-        for (uint256 i = 0; i < settlements.length; i++) {
-            IERC20(baseCurrency).safeTransferFrom(
-                settlements[i].from,
-                settlements[i].to,
-                settlements[i].amount
-            );
-        }
+        IERC20(baseCurrency).safeTransferFrom(msg.sender, to, amount);
 
-        // Clear balances and expenses
+        balances[groupId][msg.sender] += int256(amount);
+        balances[groupId][to] -= int256(amount);
+
+        // Clean up expenses if all balances are settled
         address[] memory members = groupPot.getMembers(groupId);
+        bool allZero = true;
         for (uint256 i = 0; i < members.length; i++) {
-            delete balances[groupId][members[i]];
+            if (balances[groupId][members[i]] != 0) {
+                allZero = false;
+                break;
+            }
         }
-        delete groupExpenses[groupId];
+        if (allZero) {
+            delete groupExpenses[groupId];
+        }
 
-        emit SettledUp(groupId);
+        emit Settled(groupId, msg.sender, to, amount);
     }
 
     function getExpense(uint256 groupId, uint256 expenseId) external view returns (

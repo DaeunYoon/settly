@@ -4,7 +4,7 @@ import { parseAbi } from "viem";
 export const CONTRACTS = {
   FX_ORACLE: "0x545BD434404CA7F8F6aD86d86d8e3a2297b14616",
   GROUP_POT: "0xFe48DA5dE72879F7c7897aEb48D3D9450d025153",
-  SPLIT_SETTLER: "0x989515A4a8a36450F7cb3FB94545A079D066a797",
+  SPLIT_SETTLER: "0xB44aF76fd1938176Bc2F02e2C9a405198E657B10",
   USDC: "0x3600000000000000000000000000000000000000",
   EURC: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
 } as const;
@@ -64,11 +64,11 @@ export const SPLIT_SETTLER_ABI = parseAbi([
   "function addExpense(uint256 groupId, uint256 amount, string description, address[] splitAmong)",
   "function getBalances(uint256 groupId) view returns (address[] members, int256[] memberBalances)",
   "function calculateSettlements(uint256 groupId) view returns ((address from, address to, uint256 amount)[])",
-  "function settleUp(uint256 groupId)",
+  "function settle(uint256 groupId, address to)",
   "function getExpense(uint256 groupId, uint256 expenseId) view returns (address paidBy, uint256 amount, string description, address[] splitAmong, uint256 timestamp)",
   "function getExpenseCount(uint256 groupId) view returns (uint256)",
   "event ExpenseAdded(uint256 indexed groupId, uint256 expenseId, address paidBy, uint256 amount, string description)",
-  "event SettledUp(uint256 indexed groupId)",
+  "event Settled(uint256 indexed groupId, address indexed from, address indexed to, uint256 amount)",
 ]);
 
 export const ERC20_ABI = parseAbi([

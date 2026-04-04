@@ -65,6 +65,7 @@ export default function GroupDetailScreen() {
     new Map()
   );
   const [balances, setBalances] = useState<{ member: string; balance: bigint }[]>([]);
+  const [settlements, setSettlements] = useState<{ from: string; to: string; amount: bigint }[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [txLoading, setTxLoading] = useState(false);
@@ -163,6 +164,16 @@ export default function GroupDetailScreen() {
       setBalances(
         balMembers.map((m, i) => ({ member: m, balance: balAmounts[i] }))
       );
+
+      // Load calculated settlements
+      const settlementsResult = await client.readContract({
+        address: CONTRACTS.SPLIT_SETTLER,
+        abi: SPLIT_SETTLER_ABI,
+        functionName: "calculateSettlements",
+        args: [BigInt(groupId)],
+      });
+      const rawSettlements = settlementsResult as { from: string; to: string; amount: bigint }[];
+      setSettlements(rawSettlements.map((s) => ({ from: s.from, to: s.to, amount: s.amount })));
     } catch (err) {
       console.error("Failed to load group:", err);
     } finally {
@@ -308,7 +319,7 @@ export default function GroupDetailScreen() {
     }
   };
 
-  const handleSettleUp = async () => {
+  const handleSettle = async (to: string) => {
     if (!group) return;
     setTxLoading(true);
     try {
@@ -337,14 +348,14 @@ export default function GroupDetailScreen() {
       const settleHash = await walletClient.writeContract({
         address: CONTRACTS.SPLIT_SETTLER,
         abi: SPLIT_SETTLER_ABI,
-        functionName: "settleUp",
-        args: [BigInt(groupId)],
+        functionName: "settle",
+        args: [BigInt(groupId), to as `0x${string}`],
       });
       await getPublicClient().waitForTransactionReceipt({ hash: settleHash });
 
       loadGroup();
     } catch (e: any) {
-      Alert.alert("Error", e.message ?? "Settle up failed");
+      Alert.alert("Error", e.message ?? "Settlement failed");
     } finally {
       setTxLoading(false);
     }
@@ -521,7 +532,10 @@ export default function GroupDetailScreen() {
 
   const pendingRequests = requests.filter((r) => r.status === 0);
   const rejectedRequests = requests.filter((r) => r.status === 2);
-  const hasDebt = balances.some((b) => b.balance < 0n);
+  const myBalance = balances.find((b) => b.member.toLowerCase() === userAddress);
+  const mySettlements = settlements.filter(
+    (s) => s.from.toLowerCase() === userAddress
+  );
 
   return (
     <View className="flex-1 bg-white pt-16">
@@ -742,37 +756,82 @@ export default function GroupDetailScreen() {
               <Text className="text-white font-semibold">Add Expense</Text>
             </Pressable>
 
-            {/* Balances */}
-            <Text className="font-semibold text-gray-900 mb-2">Balances</Text>
-            {balances.map((b) => (
-              <View
-                key={b.member}
-                className="flex-row justify-between py-2 border-b border-gray-100"
+            {/* Your Balance */}
+            <Text className="font-semibold text-gray-900 mb-2">Your Balance</Text>
+            <View className="bg-gray-50 rounded-xl p-4 mb-4">
+              <Text
+                className={
+                  (myBalance?.balance ?? 0n) > 0n
+                    ? "text-green-600 text-xl font-bold text-center"
+                    : (myBalance?.balance ?? 0n) < 0n
+                    ? "text-red-500 text-xl font-bold text-center"
+                    : "text-gray-400 text-xl font-bold text-center"
+                }
               >
-                <Text className="text-gray-700">{shortAddr(b.member)}</Text>
-                <Text
-                  className={
-                    b.balance > 0n
-                      ? "text-green-600 font-medium"
-                      : b.balance < 0n
-                      ? "text-red-500 font-medium"
-                      : "text-gray-400"
-                  }
-                >
-                  {b.balance >= 0n ? "+" : ""}
-                  {formatUnits(b.balance, 6)}{" "}
-                  {currencySymbol(group.baseCurrency)}
-                </Text>
-              </View>
-            ))}
+                {(myBalance?.balance ?? 0n) >= 0n ? "+" : ""}
+                {formatUnits(myBalance?.balance ?? 0n, 6)}{" "}
+                {currencySymbol(group.baseCurrency)}
+              </Text>
+              <Text className="text-gray-400 text-xs text-center mt-1">
+                {(myBalance?.balance ?? 0n) > 0n
+                  ? "Others owe you"
+                  : (myBalance?.balance ?? 0n) < 0n
+                  ? "You owe others"
+                  : "All settled"}
+              </Text>
+            </View>
 
-            {hasDebt && (
-              <Pressable
-                onPress={handleSettleUp}
-                className="bg-black rounded-xl py-3 items-center mt-4"
-              >
-                <Text className="text-white font-semibold">Settle Up</Text>
-              </Pressable>
+            {/* You Owe */}
+            {mySettlements.length > 0 && (
+              <>
+                <Text className="font-semibold text-gray-900 mb-2">You Owe</Text>
+                {mySettlements.map((s) => (
+                  <View
+                    key={s.to}
+                    className="bg-red-50 rounded-xl p-4 mb-2 flex-row justify-between items-center"
+                  >
+                    <View>
+                      <Text className="text-gray-900 font-medium">
+                        {shortAddr(s.to)}
+                      </Text>
+                      <Text className="text-red-500 text-sm">
+                        {formatUnits(s.amount, 6)} {currencySymbol(group.baseCurrency)}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => handleSettle(s.to)}
+                      className="bg-black rounded-lg px-4 py-2"
+                    >
+                      <Text className="text-white font-semibold text-sm">Pay</Text>
+                    </Pressable>
+                  </View>
+                ))}
+              </>
+            )}
+
+            {/* Others Owe You */}
+            {settlements.filter((s) => s.to.toLowerCase() === userAddress).length > 0 && (
+              <>
+                <Text className="font-semibold text-gray-900 mb-2 mt-2">Others Owe You</Text>
+                {settlements
+                  .filter((s) => s.to.toLowerCase() === userAddress)
+                  .map((s) => (
+                    <View
+                      key={s.from}
+                      className="bg-green-50 rounded-xl p-4 mb-2 flex-row justify-between items-center"
+                    >
+                      <View>
+                        <Text className="text-gray-900 font-medium">
+                          {shortAddr(s.from)}
+                        </Text>
+                        <Text className="text-green-600 text-sm">
+                          {formatUnits(s.amount, 6)} {currencySymbol(group.baseCurrency)}
+                        </Text>
+                      </View>
+                      <Text className="text-gray-400 text-sm">Pending</Text>
+                    </View>
+                  ))}
+              </>
             )}
           </>
         )}
