@@ -24,6 +24,7 @@ import {
 } from "../contracts";
 import { formatUnits, parseUnits, keccak256, encodePacked } from "viem";
 import { getInviteCode, saveInviteCode, deleteInviteCode } from "../storage";
+import { useGroupEvents } from "../hooks/useGroupEvents";
 
 
 type Tab = "pot" | "split" | "members";
@@ -169,6 +170,10 @@ export default function GroupDetailScreen() {
     loadGroup();
   }, [loadGroup]);
 
+  useGroupEvents(groupId, () => {
+    loadGroup();
+  });
+
   const shortAddr = (addr: string) =>
     `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 
@@ -183,13 +188,22 @@ export default function GroupDetailScreen() {
       const token =
         depositCurrency === "USDC" ? CONTRACTS.USDC : CONTRACTS.EURC;
 
-      // Approve first
-      await walletClient.writeContract({
+      // Check existing allowance, only approve if insufficient
+      const allowance = await getPublicClient().readContract({
         address: token,
         abi: ERC20_ABI,
-        functionName: "approve",
-        args: [CONTRACTS.GROUP_POT, amount],
+        functionName: "allowance",
+        args: [walletClient.account.address, CONTRACTS.GROUP_POT],
       });
+
+      if (allowance < amount) {
+        await walletClient.writeContract({
+          address: token,
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [CONTRACTS.GROUP_POT, amount],
+        });
+      }
 
       // Then deposit
       await walletClient.writeContract({
@@ -319,9 +333,11 @@ export default function GroupDetailScreen() {
     } else {
       // Generate new code, show it to user before submitting tx
       const chars = "abcdefghijkmnpqrstuvwxyz23456789";
+      const bytes = new Uint8Array(6);
+      crypto.getRandomValues(bytes);
       let newCode = "";
       for (let i = 0; i < 6; i++) {
-        newCode += chars[Math.floor(Math.random() * chars.length)];
+        newCode += chars[bytes[i] % chars.length];
       }
       setPendingCode(newCode);
       setStoredInviteCode(null);
@@ -397,12 +413,8 @@ export default function GroupDetailScreen() {
   };
 
   const buildInviteUrl = (code: string) => {
-    const webUrl = process.env.EXPO_PUBLIC_WEB_URL;
-    if (!webUrl) {
-      console.error("EXPO_PUBLIC_WEB_URL is not set");
-      return null;
-    }
-    return `${webUrl}/join/${groupId}/${encodeURIComponent(code)}`;
+    const host = process.env.EXPO_PUBLIC_EXPO_HOST;
+    return `exp://${host}/--/join/${groupId}/${encodeURIComponent(code)}`;
   };
 
   const handleShareLink = async () => {
@@ -763,8 +775,10 @@ export default function GroupDetailScreen() {
                 onPress={() => {
                   // Regenerate
                   const chars = "abcdefghijkmnpqrstuvwxyz23456789";
+                  const bytes = new Uint8Array(6);
+                  crypto.getRandomValues(bytes);
                   let c = "";
-                  for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
+                  for (let i = 0; i < 6; i++) c += chars[bytes[i] % chars.length];
                   setPendingCode(c);
                 }}
                 className="rounded-xl py-4 items-center border border-gray-200"
@@ -811,8 +825,10 @@ export default function GroupDetailScreen() {
               <Pressable
                 onPress={() => {
                   const chars = "abcdefghijkmnpqrstuvwxyz23456789";
+                  const bytes = new Uint8Array(6);
+                  crypto.getRandomValues(bytes);
                   let c = "";
-                  for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
+                  for (let i = 0; i < 6; i++) c += chars[bytes[i] % chars.length];
                   setPendingCode(c);
                   setStoredInviteCode(null);
                 }}

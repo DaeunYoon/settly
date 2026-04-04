@@ -10,11 +10,13 @@ import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../types";
 import { getPublicClient, getWalletClient } from "../viem";
-import { CONTRACTS, GROUP_POT_ABI } from "../contracts";
+import { CONTRACTS, GROUP_POT_ABI, ERC20_ABI } from "../contracts";
+import { useContractEventContext } from "../contexts/ContractEventContext";
 
 export default function CreateGroupScreen() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { addGroupId } = useContractEventContext();
   const [name, setName] = useState("");
   const [fundingGoal, setFundingGoal] = useState("");
   const [baseCurrency, setBaseCurrency] = useState<"USDC" | "EURC">("USDC");
@@ -53,13 +55,26 @@ export default function CreateGroupScreen() {
 
       await getPublicClient().waitForTransactionReceipt({ hash });
 
+      // Approve token for funding goal so deposit doesn't need to
+      if (goalAmount > 0n) {
+        const approveHash = await walletClient.writeContract({
+          address: currencyAddress,
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [CONTRACTS.GROUP_POT, goalAmount],
+        });
+        await getPublicClient().waitForTransactionReceipt({ hash: approveHash });
+      }
+
       const nextId = await getPublicClient().readContract({
         address: CONTRACTS.GROUP_POT,
         abi: GROUP_POT_ABI,
         functionName: "nextGroupId",
       });
 
-      navigation.replace("GroupDetail", { groupId: Number(nextId) });
+      const newGroupId = Number(nextId);
+      addGroupId(newGroupId);
+      navigation.replace("GroupDetail", { groupId: newGroupId });
     } catch (e: any) {
       console.error("createGroup failed:", e);
       setError(e.shortMessage ?? e.message ?? "Failed to create group");

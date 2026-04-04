@@ -10,6 +10,7 @@ import * as Linking from "expo-linking";
 
 import { dynamicClient } from "./src/dynamic-client";
 import { useDynamic } from "./src/hooks/useDynamic";
+import { ContractEventProvider } from "./src/contexts/ContractEventContext";
 import type { RootStackParamList } from "./src/types";
 
 import LoginScreen from "./src/screens/LoginScreen";
@@ -101,23 +102,25 @@ export default function App() {
   return (
     <>
       <dynamicClient.reactNative.WebView />
-      <NavigationContainer ref={navRef} linking={linking}>
-        <Stack.Navigator screenOptions={{ headerShown: false }}>
-          {!isAuthenticated ? (
-            <Stack.Screen name="Login" component={LoginScreen} />
-          ) : !hasWallet ? (
-            <Stack.Screen name="WalletSetup" component={WalletSetupScreen} />
-          ) : (
-            <>
-              <Stack.Screen name="Dashboard" component={DashboardScreen} />
-              <Stack.Screen name="CreateGroup" component={CreateGroupScreen} />
-              <Stack.Screen name="JoinGroup" component={JoinGroupScreen} />
-              <Stack.Screen name="GroupDetail" component={GroupDetailScreen} />
-              <Stack.Screen name="Settings" component={SettingsScreen} />
-            </>
-          )}
-        </Stack.Navigator>
-      </NavigationContainer>
+      <ContractEventProvider>
+        <NavigationContainer ref={navRef} linking={linking}>
+          <Stack.Navigator screenOptions={{ headerShown: false }}>
+            {!isAuthenticated ? (
+              <Stack.Screen name="Login" component={LoginScreen} />
+            ) : !hasWallet ? (
+              <Stack.Screen name="WalletSetup" component={WalletSetupScreen} />
+            ) : (
+              <>
+                <Stack.Screen name="Dashboard" component={DashboardScreen} />
+                <Stack.Screen name="CreateGroup" component={CreateGroupScreen} />
+                <Stack.Screen name="JoinGroup" component={JoinGroupScreen} />
+                <Stack.Screen name="GroupDetail" component={GroupDetailScreen} />
+                <Stack.Screen name="Settings" component={SettingsScreen} />
+              </>
+            )}
+          </Stack.Navigator>
+        </NavigationContainer>
+      </ContractEventProvider>
       <StatusBar style="auto" />
     </>
   );

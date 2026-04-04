@@ -11,7 +11,8 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import type { RouteProp } from "@react-navigation/native";
 import type { RootStackParamList } from "../types";
 import { getPublicClient, getWalletClient } from "../viem";
-import { CONTRACTS, GROUP_POT_ABI } from "../contracts";
+import { CONTRACTS, GROUP_POT_ABI, ERC20_ABI } from "../contracts";
+import { useContractEventContext } from "../contexts/ContractEventContext";
 import { CameraView, useCameraPermissions } from "expo-camera";
 
 type Mode = "choose" | "scan" | "manual";
@@ -20,6 +21,7 @@ export default function JoinGroupScreen() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<RouteProp<RootStackParamList, "JoinGroup">>();
+  const { addGroupId } = useContractEventContext();
 
   const params = route.params;
   const [groupId, setGroupId] = useState(
@@ -54,6 +56,25 @@ export default function JoinGroupScreen() {
 
       await getPublicClient().waitForTransactionReceipt({ hash });
 
+      // Read group info to get funding goal and base currency, then approve
+      const { fundingGoal, baseCurrency } = await getPublicClient().readContract({
+        address: CONTRACTS.GROUP_POT,
+        abi: GROUP_POT_ABI,
+        functionName: "getGroupInfo",
+        args: [BigInt(groupId)],
+      });
+
+      if (fundingGoal > 0n) {
+        const approveHash = await walletClient.writeContract({
+          address: baseCurrency,
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [CONTRACTS.GROUP_POT, fundingGoal],
+        });
+        await getPublicClient().waitForTransactionReceipt({ hash: approveHash });
+      }
+
+      addGroupId(Number(groupId));
       navigation.navigate("GroupDetail", { groupId: Number(groupId) });
     } catch (e: any) {
       setError(e.shortMessage ?? e.message ?? "Failed to join group");

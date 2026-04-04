@@ -12,6 +12,7 @@ import type { RootStackParamList } from "../types";
 import { dynamicClient } from "../dynamic-client";
 import { getPublicClient } from "../viem";
 import { CONTRACTS, GROUP_POT_ABI } from "../contracts";
+import { useGroupEvents } from "../hooks/useGroupEvents";
 
 type GroupSummary = {
   groupId: number;
@@ -87,6 +88,10 @@ export default function DashboardScreen() {
       loadGroups();
     }, [loadGroups])
   );
+
+  useGroupEvents("all", () => {
+    loadGroups();
+  });
 
   return (
     <View className="flex-1 bg-white pt-16 px-6">
