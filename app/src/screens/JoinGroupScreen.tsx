@@ -63,8 +63,8 @@ export default function JoinGroupScreen() {
   };
 
   const parseQrData = (data: string) => {
-    // Expected format: settly://join/{groupId}/{inviteCode}
-    const match = data.match(/settly:\/\/join\/(\d+)\/(.+)/);
+    // Match join/{groupId}/{inviteCode} in any URL format
+    const match = data.match(/join\/(\d+)\/(.+?)(?:\?|$)/);
     if (match) {
       setGroupId(match[1]);
       setInviteCode(decodeURIComponent(match[2]));

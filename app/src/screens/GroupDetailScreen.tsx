@@ -24,6 +24,7 @@ import {
 } from "../contracts";
 import { formatUnits, parseUnits, keccak256, encodePacked } from "viem";
 import { getInviteCode, saveInviteCode } from "../storage";
+import * as Linking from "expo-linking";
 
 type Tab = "pot" | "split" | "members";
 
@@ -74,6 +75,7 @@ export default function GroupDetailScreen() {
   // Invite
   const [inviteModalVisible, setInviteModalVisible] = useState(false);
   const [storedInviteCode, setStoredInviteCode] = useState<string | null>(null);
+  const [pendingCode, setPendingCode] = useState<string | null>(null);
 
   const currencySymbol = (addr: string) =>
     addr.toLowerCase() === CONTRACTS.USDC.toLowerCase() ? "USDC" : "EURC";
@@ -307,43 +309,101 @@ export default function GroupDetailScreen() {
 
   const handleInvite = async () => {
     // Check if we already have a code stored
-    let code = await getInviteCode(groupId);
-    if (!code) {
-      // Generate new code, push hash on-chain, save locally
+    const code = await getInviteCode(groupId);
+    if (code) {
+      setStoredInviteCode(code);
+      setPendingCode(null);
+      setInviteModalVisible(true);
+    } else {
+      // Generate new code, show it to user before submitting tx
       const chars = "abcdefghijkmnpqrstuvwxyz23456789";
-      code = "";
+      let newCode = "";
       for (let i = 0; i < 6; i++) {
-        code += chars[Math.floor(Math.random() * chars.length)];
+        newCode += chars[Math.floor(Math.random() * chars.length)];
       }
-      try {
-        setTxLoading(true);
-        const walletClient = await getWalletClient();
-        const hash = keccak256(encodePacked(["string"], [code]));
-        await walletClient.writeContract({
-          address: CONTRACTS.GROUP_POT,
-          abi: GROUP_POT_ABI,
-          functionName: "updateInviteCode",
-          args: [BigInt(groupId), hash],
-        });
-        await saveInviteCode(groupId, code);
-      } catch (e: any) {
-        Alert.alert("Error", e.message ?? "Failed to set invite code");
-        return;
-      } finally {
-        setTxLoading(false);
-      }
+      setPendingCode(newCode);
+      setStoredInviteCode(null);
+      setInviteModalVisible(true);
     }
-    setStoredInviteCode(code);
-    setInviteModalVisible(true);
+  };
+
+  const confirmInviteCode = async () => {
+    if (!pendingCode) return;
+    try {
+      setTxLoading(true);
+      const walletClient = await getWalletClient();
+      const hash = keccak256(encodePacked(["string"], [pendingCode]));
+      const txHash = await walletClient.writeContract({
+        address: CONTRACTS.GROUP_POT,
+        abi: GROUP_POT_ABI,
+        functionName: "updateInviteCode",
+        args: [BigInt(groupId), hash],
+      });
+      await getPublicClient().waitForTransactionReceipt({ hash: txHash });
+      await saveInviteCode(groupId, pendingCode);
+      setStoredInviteCode(pendingCode);
+      setPendingCode(null);
+    } catch (e: any) {
+      Alert.alert("Error", e.message ?? "Failed to set invite code");
+    } finally {
+      setTxLoading(false);
+    }
+  };
+
+  const handleLockGroup = async () => {
+    Alert.alert(
+      "Lock Group",
+      "No one will be able to join until you create a new invite. Continue?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Lock",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              setTxLoading(true);
+              const walletClient = await getWalletClient();
+              const txHash = await walletClient.writeContract({
+                address: CONTRACTS.GROUP_POT,
+                abi: GROUP_POT_ABI,
+                functionName: "updateInviteCode",
+                args: [
+                  BigInt(groupId),
+                  "0x0000000000000000000000000000000000000000000000000000000000000000",
+                ],
+              });
+              await getPublicClient().waitForTransactionReceipt({ hash: txHash });
+              // Clear stored code
+              await saveInviteCode(groupId, "");
+              Alert.alert("Locked", "Group is now locked.");
+            } catch (e: any) {
+              Alert.alert("Error", e.message ?? "Failed to lock group");
+            } finally {
+              setTxLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const buildInviteUrl = (code: string) => {
+    const webUrl = process.env.EXPO_PUBLIC_WEB_URL;
+    if (!webUrl) {
+      console.error("EXPO_PUBLIC_WEB_URL is not set");
+      return null;
+    }
+    return `${webUrl}/join/${groupId}/${encodeURIComponent(code)}`;
   };
 
   const handleShareLink = async () => {
     if (!storedInviteCode) return;
-    const link = `settly://join/${groupId}/${encodeURIComponent(storedInviteCode)}`;
+    const link = buildInviteUrl(storedInviteCode);
+    const message = link
+      ? `Join "${group?.name}" on Settly!\n\n${link}`
+      : `Join "${group?.name}" on Settly!\n\nGroup ID: ${groupId}\nInvite Code: ${storedInviteCode}`;
     try {
-      await Share.share({
-        message: `Join "${group?.name}" on Settly!\n\n${link}`,
-      });
+      await Share.share({ message });
     } catch {}
   };
 
@@ -572,12 +632,20 @@ export default function GroupDetailScreen() {
           <>
             <View className="flex-row justify-between items-center mb-2">
               <Text className="font-semibold text-gray-900">Members</Text>
-              <Pressable
-                onPress={handleInvite}
-                className="bg-black rounded-lg px-4 py-2"
-              >
-                <Text className="text-white text-sm font-semibold">Invite</Text>
-              </Pressable>
+              <View className="flex-row gap-2">
+                <Pressable
+                  onPress={handleLockGroup}
+                  className="border border-red-200 rounded-lg px-3 py-2"
+                >
+                  <Text className="text-red-500 text-sm font-semibold">Lock</Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleInvite}
+                  className="bg-black rounded-lg px-4 py-2"
+                >
+                  <Text className="text-white text-sm font-semibold">Invite</Text>
+                </Pressable>
+              </View>
             </View>
             {group.members.map((m) => (
               <View
@@ -614,18 +682,66 @@ export default function GroupDetailScreen() {
             <Text className="text-2xl font-bold text-gray-900">
               Invite Members
             </Text>
-            <Pressable onPress={() => setInviteModalVisible(false)}>
+            <Pressable onPress={() => { setInviteModalVisible(false); setPendingCode(null); }}>
               <Text className="text-gray-500 text-base">Close</Text>
             </Pressable>
           </View>
 
+          {/* Step 1: Show generated code, ask to confirm */}
+          {pendingCode && !storedInviteCode && (
+            <>
+              <Text className="text-gray-500 mb-4">
+                A new invite code has been generated. Confirm to set it on-chain.
+              </Text>
+              <View className="bg-gray-50 rounded-xl p-6 items-center mb-6">
+                <Text className="text-xs text-gray-400 mb-2">Invite Code</Text>
+                <Text className="text-3xl font-bold text-gray-900 tracking-widest">
+                  {pendingCode}
+                </Text>
+              </View>
+              <Pressable
+                onPress={confirmInviteCode}
+                disabled={txLoading}
+                className="bg-black rounded-xl py-4 items-center mb-3"
+              >
+                {txLoading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text className="text-white text-lg font-semibold">
+                    Confirm & Set Code
+                  </Text>
+                )}
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  // Regenerate
+                  const chars = "abcdefghijkmnpqrstuvwxyz23456789";
+                  let c = "";
+                  for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
+                  setPendingCode(c);
+                }}
+                className="rounded-xl py-4 items-center border border-gray-200"
+              >
+                <Text className="text-gray-700 text-base">Regenerate Code</Text>
+              </Pressable>
+            </>
+          )}
+
+          {/* Step 2: Code is live — show QR + share */}
           {storedInviteCode && (
             <>
+              <View className="bg-gray-50 rounded-xl p-4 items-center mb-4">
+                <Text className="text-xs text-gray-400 mb-1">Invite Code</Text>
+                <Text className="text-2xl font-bold text-gray-900 tracking-widest">
+                  {storedInviteCode}
+                </Text>
+              </View>
+
               {/* QR Code */}
               <View className="items-center mb-6">
                 <View className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
                   <QrCodeSvg
-                    value={`settly://join/${groupId}/${encodeURIComponent(storedInviteCode)}`}
+                    value={buildInviteUrl(storedInviteCode) ?? `settly://join/${groupId}/${storedInviteCode}`}
                     frameSize={200}
                   />
                 </View>
