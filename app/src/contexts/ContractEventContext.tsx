@@ -61,6 +61,8 @@ export function ContractEventProvider({
 }: {
   children: React.ReactNode;
 }) {
+  const { wallets } = useDynamic();
+  const walletAddress = wallets.primary?.address;
   const { groupIds, loading, refresh, addGroupId } = useUserGroups();
   const subscribersRef = useRef<
     Map<string, Set<Callback>>
@@ -73,10 +75,10 @@ export function ContractEventProvider({
     groupIdsRef.current = groupIds;
   }, [groupIds]);
 
-  // Initial group scan
+  // Re-scan groups when wallet becomes available or changes
   useEffect(() => {
     refresh();
-  }, [refresh]);
+  }, [refresh, walletAddress]);
 
   // ── Subscriber registry ────────────────────────────────────
 
@@ -185,82 +187,103 @@ export function ContractEventProvider({
     }
   }, []);
 
-  // ── Watcher lifecycle ──────────────────────────────────────
-  // No args filter — filter client-side to avoid RPC silently
-  // dropping events for certain contracts.
+  // ── Manual poll lifecycle ───────────────────────────────────
+  // Uses getContractEvents (eth_getLogs) directly instead of
+  // watchContractEvent, which relies on eth_newFilter and can
+  // silently fail on certain RPC providers.
 
-  const unwatchRef = useRef<(() => void)[]>([]);
+  const lastBlockRef = useRef<bigint | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const stopWatchers = useCallback(() => {
-    unwatchRef.current.forEach((unwatch) => unwatch());
-    unwatchRef.current = [];
+  const stopPolling = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
   }, []);
 
-  const startWatchers = useCallback(() => {
-    stopWatchers();
-
+  const poll = useCallback(async () => {
+    if (!activeRef.current) return;
     if (groupIdsRef.current.length === 0) return;
 
-    const client = getPublicClient();
+    try {
+      const client = getPublicClient();
+      const latestBlock = await client.getBlockNumber();
 
-    const onLogs = (logs: Log[]) => {
-      if (!activeRef.current) return;
+      // On first poll, just record the current block — don't replay history
+      if (lastBlockRef.current === null) {
+        lastBlockRef.current = latestBlock;
+        return;
+      }
+
+      if (latestBlock <= lastBlockRef.current) return;
+
+      const fromBlock = lastBlockRef.current + 1n;
+      lastBlockRef.current = latestBlock;
+
+      const [potLogs, splitLogs] = await Promise.all([
+        client.getContractEvents({
+          address: CONTRACTS.GROUP_POT,
+          abi: GROUP_POT_ABI,
+          fromBlock,
+          toBlock: latestBlock,
+        }),
+        client.getContractEvents({
+          address: CONTRACTS.SPLIT_SETTLER,
+          abi: SPLIT_SETTLER_ABI,
+          fromBlock,
+          toBlock: latestBlock,
+        }),
+      ]);
+
+      const allLogs = [...potLogs, ...splitLogs] as Log[];
+      if (allLogs.length === 0) return;
+
       // Client-side groupId filter
       const groupIdSet = new Set(groupIdsRef.current);
-      const relevant = logs.filter((log: any) => {
+      const relevant = allLogs.filter((log: any) => {
         const gId = log.args?.groupId;
         return gId != null && groupIdSet.has(Number(gId));
       });
       if (relevant.length === 0) return;
+
       dispatch(relevant);
       showPopups(relevant);
-    };
-
-    try {
-      const unwatchGroupPot = client.watchContractEvent({
-        address: CONTRACTS.GROUP_POT,
-        abi: GROUP_POT_ABI,
-        pollingInterval: POLLING_INTERVAL,
-        onLogs,
-      });
-      unwatchRef.current.push(unwatchGroupPot);
     } catch (err) {
-      console.error("[ContractEvents] GroupPot watcher failed:", err);
+      console.error("[ContractEvents] poll error:", err);
     }
+  }, [dispatch, showPopups]);
 
-    try {
-      const unwatchSplitSettler = client.watchContractEvent({
-        address: CONTRACTS.SPLIT_SETTLER,
-        abi: SPLIT_SETTLER_ABI,
-        pollingInterval: POLLING_INTERVAL,
-        onLogs,
-      });
-      unwatchRef.current.push(unwatchSplitSettler);
-    } catch (err) {
-      console.error("[ContractEvents] SplitSettler watcher failed:", err);
-    }
-  }, [stopWatchers, dispatch, showPopups]);
+  const startPolling = useCallback(() => {
+    stopPolling();
+    // Reset so next poll seeds the block cursor
+    lastBlockRef.current = null;
+    // Kick off first poll immediately, then repeat
+    poll();
+    timerRef.current = setInterval(poll, POLLING_INTERVAL);
+  }, [stopPolling, poll]);
 
-  // Start/restart watchers when groupIds change
+  // Start/restart polling when groups become available
+  const hasGroups = groupIds.length > 0;
   useEffect(() => {
-    if (loading) return;
-    startWatchers();
-    return () => stopWatchers();
-  }, [loading, startWatchers, stopWatchers]);
+    if (loading || !hasGroups) return;
+    startPolling();
+    return () => stopPolling();
+  }, [loading, hasGroups, startPolling, stopPolling]);
 
   // Pause on background, resume on foreground
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
       if (state === "active") {
         activeRef.current = true;
-        startWatchers();
+        startPolling();
       } else {
         activeRef.current = false;
-        stopWatchers();
+        stopPolling();
       }
     });
     return () => sub.remove();
-  }, [startWatchers, stopWatchers]);
+  }, [startPolling, stopPolling]);
 
   return (
     <ContractEventContext.Provider

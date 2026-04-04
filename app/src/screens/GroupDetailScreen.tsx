@@ -51,6 +51,7 @@ type RequestData = {
   approvalsNeeded: number;
   status: number; // 0=Pending, 1=Approved, 2=Rejected, 3=Cancelled
   thresholdMet: boolean;
+  userVote: number; // 0=None, 1=Approve, 2=Reject
 };
 
 export default function GroupDetailScreen() {
@@ -139,6 +140,15 @@ export default function GroupDetailScreen() {
             functionName: "getRequestInfo",
             args: [BigInt(groupId), BigInt(i)],
           });
+        let userVote = 0;
+        if (userAddress) {
+          userVote = Number(await client.readContract({
+            address: CONTRACTS.GROUP_POT,
+            abi: GROUP_POT_ABI,
+            functionName: "getVote",
+            args: [BigInt(groupId), BigInt(i), userAddress as `0x${string}`],
+          }));
+        }
         reqs.push({
           id: i,
           requester,
@@ -149,6 +159,7 @@ export default function GroupDetailScreen() {
           approvalsNeeded: Number(approvalsNeeded),
           status,
           thresholdMet,
+          userVote,
         });
       }
       setRequests(reqs);
@@ -677,24 +688,30 @@ export default function GroupDetailScreen() {
                       {r.thresholdMet ? " · Awaiting funds" : ""}
                     </Text>
                     {r.requester.toLowerCase() !== userAddress && (
-                      <View className="flex-row gap-2 mt-2">
-                        <Pressable
-                          onPress={() => handleVote(r.id, true)}
-                          className="flex-1 bg-black rounded-lg py-2 items-center"
-                        >
-                          <Text className="text-white font-semibold text-sm">
-                            Approve
-                          </Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() => handleVote(r.id, false)}
-                          className="flex-1 border border-red-300 rounded-lg py-2 items-center"
-                        >
-                          <Text className="text-red-500 font-semibold text-sm">
-                            Reject
-                          </Text>
-                        </Pressable>
-                      </View>
+                      r.userVote !== 0 ? (
+                        <Text className="text-sm text-gray-400 mt-2">
+                          You {r.userVote === 1 ? "approved" : "rejected"} this request
+                        </Text>
+                      ) : (
+                        <View className="flex-row gap-2 mt-2">
+                          <Pressable
+                            onPress={() => handleVote(r.id, true)}
+                            className="flex-1 bg-black rounded-lg py-2 items-center"
+                          >
+                            <Text className="text-white font-semibold text-sm">
+                              Approve
+                            </Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => handleVote(r.id, false)}
+                            className="flex-1 border border-red-300 rounded-lg py-2 items-center"
+                          >
+                            <Text className="text-red-500 font-semibold text-sm">
+                              Reject
+                            </Text>
+                          </Pressable>
+                        </View>
+                      )
                     )}
                   </View>
                 ))}

@@ -3,8 +3,8 @@ import { parseAbi } from "viem";
 // Arc Testnet deployed addresses
 export const CONTRACTS = {
   FX_ORACLE: "0x545BD434404CA7F8F6aD86d86d8e3a2297b14616",
-  GROUP_POT: "0xFe48DA5dE72879F7c7897aEb48D3D9450d025153",
-  SPLIT_SETTLER: "0xB44aF76fd1938176Bc2F02e2C9a405198E657B10",
+  GROUP_POT: "0x2bEe6c4a414147360069cce4B22FFA9f8Bf28f3E",
+  SPLIT_SETTLER: "0x454017Cc37Ce3574B2aB16a8567c69E884E64451",
   USDC: "0x3600000000000000000000000000000000000000",
   EURC: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
 } as const;
@@ -43,6 +43,7 @@ export const GROUP_POT_ABI = parseAbi([
   "function getRequestInfo(uint256 groupId, uint256 requestId) view returns ((address requester, uint256 amount, string description, uint256 approvalCount, uint256 rejectionCount, uint256 approvalsNeeded, uint8 status, bool thresholdMet, uint256 timestamp))",
   "function getContribution(uint256 groupId, address member) view returns (uint256)",
   "function getRequestCount(uint256 groupId) view returns (uint256)",
+  "function getVote(uint256 groupId, uint256 requestId, address voter) view returns (uint8)",
   "function nextGroupId() view returns (uint256)",
   "function MAX_GROUP_SIZE() view returns (uint256)",
   "function usdc() view returns (address)",

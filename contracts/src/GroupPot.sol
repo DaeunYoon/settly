@@ -324,6 +324,10 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
         return groups[groupId].nextRequestId;
     }
 
+    function getVote(uint256 groupId, uint256 requestId, address voter) external view returns (Vote) {
+        return votes[groupId][requestId][voter];
+    }
+
     // ─── Internal ────────────────────────────────────────────────
 
     function _convertToBase(uint256 amount, address token, address baseCurrency) internal view returns (uint256) {
