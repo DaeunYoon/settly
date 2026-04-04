@@ -24,7 +24,7 @@ export default function SettingsScreen() {
 
   return (
     <View className="flex-1 bg-white pt-16 px-6">
-      <Pressable onPress={() => navigation.goBack()} className="mb-6">
+      <Pressable onPress={() => navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Dashboard")} className="mb-6">
         <Text className="text-gray-500">← Back</Text>
       </Pressable>
 

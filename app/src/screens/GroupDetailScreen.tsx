@@ -10,6 +10,7 @@ import {
   Alert,
   Share,
   Modal,
+  RefreshControl,
 } from "react-native";
 import { QrCodeSvg } from "react-native-qr-svg";
 import { useRoute, useNavigation } from "@react-navigation/native";
@@ -65,6 +66,7 @@ export default function GroupDetailScreen() {
   );
   const [balances, setBalances] = useState<{ member: string; balance: bigint }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [txLoading, setTxLoading] = useState(false);
 
   // Form states
@@ -176,6 +178,12 @@ export default function GroupDetailScreen() {
     loadGroup();
   });
 
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadGroup();
+    setRefreshing(false);
+  }, [loadGroup]);
+
   const shortAddr = (addr: string) =>
     `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 
@@ -199,21 +207,23 @@ export default function GroupDetailScreen() {
       });
 
       if (allowance < amount) {
-        await walletClient.writeContract({
+        const approveHash = await walletClient.writeContract({
           address: token,
           abi: ERC20_ABI,
           functionName: "approve",
           args: [CONTRACTS.GROUP_POT, amount],
         });
+        await getPublicClient().waitForTransactionReceipt({ hash: approveHash });
       }
 
       // Then deposit
-      await walletClient.writeContract({
+      const depositHash = await walletClient.writeContract({
         address: CONTRACTS.GROUP_POT,
         abi: GROUP_POT_ABI,
         functionName: "deposit",
         args: [BigInt(groupId), amount, token],
       });
+      await getPublicClient().waitForTransactionReceipt({ hash: depositHash });
 
       setDepositAmount("");
       loadGroup();
@@ -231,12 +241,13 @@ export default function GroupDetailScreen() {
       const walletClient = await getWalletClient();
       const amount = parseUnits(reimbAmount, 6);
 
-      await walletClient.writeContract({
+      const reimbHash = await walletClient.writeContract({
         address: CONTRACTS.GROUP_POT,
         abi: GROUP_POT_ABI,
         functionName: "requestReimbursement",
         args: [BigInt(groupId), amount, reimbDesc],
       });
+      await getPublicClient().waitForTransactionReceipt({ hash: reimbHash });
 
       setReimbAmount("");
       setReimbDesc("");
@@ -252,12 +263,13 @@ export default function GroupDetailScreen() {
     setTxLoading(true);
     try {
       const walletClient = await getWalletClient();
-      await walletClient.writeContract({
+      const voteHash = await walletClient.writeContract({
         address: CONTRACTS.GROUP_POT,
         abi: GROUP_POT_ABI,
         functionName: "voteOnRequest",
         args: [BigInt(groupId), BigInt(requestId), approve],
       });
+      await getPublicClient().waitForTransactionReceipt({ hash: voteHash });
       loadGroup();
     } catch (e: any) {
       Alert.alert("Error", e.message ?? (approve ? "Approve failed" : "Reject failed"));
@@ -273,7 +285,7 @@ export default function GroupDetailScreen() {
       const walletClient = await getWalletClient();
       const amount = parseUnits(expenseAmount, 6);
 
-      await walletClient.writeContract({
+      const expHash = await walletClient.writeContract({
         address: CONTRACTS.SPLIT_SETTLER,
         abi: SPLIT_SETTLER_ABI,
         functionName: "addExpense",
@@ -284,6 +296,7 @@ export default function GroupDetailScreen() {
           group.members as `0x${string}`[],
         ],
       });
+      await getPublicClient().waitForTransactionReceipt({ hash: expHash });
 
       setExpenseAmount("");
       setExpenseDesc("");
@@ -302,20 +315,32 @@ export default function GroupDetailScreen() {
       const walletClient = await getWalletClient();
       const token = group.baseCurrency as `0x${string}`;
 
-      // Approve settler to pull tokens
-      await walletClient.writeContract({
+      // Only approve if current allowance is insufficient
+      const publicClient = getPublicClient();
+      const allowance = await publicClient.readContract({
         address: token,
         abi: ERC20_ABI,
-        functionName: "approve",
-        args: [CONTRACTS.SPLIT_SETTLER, parseUnits("1000000", 6)],
-      });
+        functionName: "allowance",
+        args: [walletClient.account.address, CONTRACTS.SPLIT_SETTLER],
+      }) as bigint;
 
-      await walletClient.writeContract({
+      if (allowance < parseUnits("1000000", 6)) {
+        const approveHash = await walletClient.writeContract({
+          address: token,
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [CONTRACTS.SPLIT_SETTLER, parseUnits("1000000", 6)],
+        });
+        await getPublicClient().waitForTransactionReceipt({ hash: approveHash });
+      }
+
+      const settleHash = await walletClient.writeContract({
         address: CONTRACTS.SPLIT_SETTLER,
         abi: SPLIT_SETTLER_ABI,
         functionName: "settleUp",
         args: [BigInt(groupId)],
       });
+      await getPublicClient().waitForTransactionReceipt({ hash: settleHash });
 
       loadGroup();
     } catch (e: any) {
@@ -502,7 +527,7 @@ export default function GroupDetailScreen() {
     <View className="flex-1 bg-white pt-16">
       {/* Header */}
       <View className="px-6 mb-4">
-        <Pressable onPress={() => navigation.goBack()} className="mb-2">
+        <Pressable onPress={() => navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Dashboard")} className="mb-2">
           <Text className="text-gray-500">← Back</Text>
         </Pressable>
         <Text className="text-2xl font-bold text-gray-900">{group.name}</Text>
@@ -544,7 +569,12 @@ export default function GroupDetailScreen() {
         </View>
       )}
 
-      <ScrollView className="flex-1 px-6 pt-4">
+      <ScrollView
+        className="flex-1 px-6 pt-4"
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
         {/* ─── Pot Tab ─── */}
         {tab === "pot" && (
           <>

@@ -25,13 +25,10 @@ import SettingsScreen from "./src/screens/SettingsScreen";
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 const prefix = Linking.createURL("/");
-console.log("[Linking] prefix:", prefix);
 
 function parseJoinUrl(url: string): { token: string } | null {
-  console.log("[Linking] parseJoinUrl input:", url);
   const tokenMatch = url.match(/join\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\?|$)/i);
   if (tokenMatch) {
-    console.log("[Linking] token match:", tokenMatch);
     return { token: tokenMatch[1] };
   }
   return null;
@@ -57,8 +54,6 @@ export default function App() {
   const hasWallet = !!wallets.embedded?.hasWallet;
   const isReady = isAuthenticated && hasWallet;
 
-  console.log("[App] render — isAuthenticated:", isAuthenticated, "hasWallet:", hasWallet, "isReady:", isReady);
-
   // Keep the auth token in sync for non-React API calls
   useEffect(() => {
     setAuthToken(auth.token ?? null);
@@ -68,19 +63,15 @@ export default function App() {
   useEffect(() => {
     // Check initial URL
     Linking.getInitialURL().then((url) => {
-      console.log("[Linking] getInitialURL:", url);
       if (url && !isReady) {
         const params = parseJoinUrl(url);
-        console.log("[Linking] initial parsed params:", params);
         if (params) pendingJoin.current = params;
       }
     });
 
     // Listen for deep link URLs
     const sub = Linking.addEventListener("url", ({ url }) => {
-      console.log("[Linking] url event:", url, "isReady:", isReady);
       const params = parseJoinUrl(url);
-      console.log("[Linking] event parsed params:", params);
       if (params) {
         if (isReady) {
           // Already authenticated — navigate immediately
@@ -95,14 +86,11 @@ export default function App() {
 
   // Replay pending deep link after auth + wallet setup
   useEffect(() => {
-    console.log("[Linking] replay check — isReady:", isReady, "pendingJoin:", pendingJoin.current);
     if (isReady && pendingJoin.current) {
       const params = pendingJoin.current;
       pendingJoin.current = null;
-      console.log("[Linking] navigating to JoinGroup with:", params);
       // Small delay to let navigator mount
       setTimeout(() => {
-        console.log("[Linking] navRef.current:", !!navRef.current);
         navRef.current?.navigate("JoinGroup", params);
       }, 100);
     }

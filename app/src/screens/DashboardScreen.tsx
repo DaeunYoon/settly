@@ -27,6 +27,7 @@ export default function DashboardScreen() {
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadGroups = useCallback(async () => {
     try {
@@ -93,6 +94,12 @@ export default function DashboardScreen() {
     loadGroups();
   });
 
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadGroups();
+    setRefreshing(false);
+  }, [loadGroups]);
+
   return (
     <View className="flex-1 bg-white pt-16 px-6">
       <View className="flex-row justify-between items-center mb-6">
@@ -102,41 +109,45 @@ export default function DashboardScreen() {
         </Pressable>
       </View>
 
-      {loading ? (
-        <ActivityIndicator className="mt-10" />
-      ) : groups.length === 0 ? (
-        <View className="flex-1 items-center justify-center">
-          <Text className="text-gray-400 text-lg mb-2">No groups yet</Text>
-          <Text className="text-gray-400 text-sm">
-            Create or join a group to get started
-          </Text>
-        </View>
-      ) : (
-        <FlatList
-          data={groups}
-          keyExtractor={(item) => String(item.groupId)}
-          renderItem={({ item }) => (
-            <Pressable
-              onPress={() =>
-                navigation.navigate("GroupDetail", { groupId: item.groupId })
-              }
-              className="bg-gray-50 rounded-xl p-4 mb-3"
-            >
-              <Text className="text-lg font-semibold text-gray-900">
-                {item.name}
+      <FlatList
+        className="flex-1"
+        data={groups}
+        keyExtractor={(item) => String(item.groupId)}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+        ListEmptyComponent={
+          loading ? (
+            <ActivityIndicator className="mt-10" />
+          ) : (
+            <View className="items-center justify-center mt-20">
+              <Text className="text-gray-400 text-lg mb-2">No groups yet</Text>
+              <Text className="text-gray-400 text-sm">
+                Create or join a group to get started
               </Text>
-              <View className="flex-row justify-between mt-1">
-                <Text className="text-sm text-gray-500">
-                  {item.memberCount} members
-                </Text>
-                <Text className="text-sm font-medium text-gray-700">
-                  {item.potBalance} {item.baseCurrency}
-                </Text>
-              </View>
-            </Pressable>
-          )}
-        />
-      )}
+            </View>
+          )
+        }
+        renderItem={({ item }) => (
+          <Pressable
+            onPress={() =>
+              navigation.navigate("GroupDetail", { groupId: item.groupId })
+            }
+            className="bg-gray-50 rounded-xl p-4 mb-3"
+          >
+            <Text className="text-lg font-semibold text-gray-900">
+              {item.name}
+            </Text>
+            <View className="flex-row justify-between mt-1">
+              <Text className="text-sm text-gray-500">
+                {item.memberCount} members
+              </Text>
+              <Text className="text-sm font-medium text-gray-700">
+                {item.potBalance} {item.baseCurrency}
+              </Text>
+            </View>
+          </Pressable>
+        )}
+      />
 
       <View className="flex-row gap-3 mb-8">
         <Pressable

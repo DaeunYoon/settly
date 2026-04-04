@@ -7,7 +7,7 @@ import React, {
 } from "react";
 import { Alert, AppState } from "react-native";
 import { formatUnits } from "viem";
-import type { WatchContractEventReturnType, Log } from "viem";
+import type { Log } from "viem";
 import { getPublicClient } from "../viem";
 import {
   CONTRACTS,
@@ -64,8 +64,13 @@ export function ContractEventProvider({
   const subscribersRef = useRef<
     Map<string, Set<Callback>>
   >(new Map());
-  const unwatchRef = useRef<WatchContractEventReturnType[]>([]);
   const activeRef = useRef(true);
+  const groupIdsRef = useRef<number[]>(groupIds);
+
+  // Keep groupIds ref in sync
+  useEffect(() => {
+    groupIdsRef.current = groupIds;
+  }, [groupIds]);
 
   // Initial group scan
   useEffect(() => {
@@ -118,6 +123,14 @@ export function ContractEventProvider({
       if (!eventName || !args) continue;
 
       switch (eventName) {
+        case "MemberJoined": {
+          if (args.member?.toLowerCase() === userAddress) break;
+          Alert.alert(
+            "New Member",
+            `${shortAddr(args.member)} joined the group`
+          );
+          break;
+        }
         case "Deposited": {
           if (args.member?.toLowerCase() === userAddress) break;
           const amount = formatUnits(args.amount ?? 0n, 6);
@@ -157,6 +170,10 @@ export function ContractEventProvider({
   }, []);
 
   // ── Watcher lifecycle ──────────────────────────────────────
+  // No args filter — filter client-side to avoid RPC silently
+  // dropping events for certain contracts.
+
+  const unwatchRef = useRef<(() => void)[]>([]);
 
   const stopWatchers = useCallback(() => {
     unwatchRef.current.forEach((unwatch) => unwatch());
@@ -166,22 +183,27 @@ export function ContractEventProvider({
   const startWatchers = useCallback(() => {
     stopWatchers();
 
-    if (groupIds.length === 0) return;
+    if (groupIdsRef.current.length === 0) return;
 
     const client = getPublicClient();
-    const bigIntIds = groupIds.map((id) => BigInt(id));
 
     const onLogs = (logs: Log[]) => {
       if (!activeRef.current) return;
-      dispatch(logs);
-      showPopups(logs);
+      // Client-side groupId filter
+      const groupIdSet = new Set(groupIdsRef.current);
+      const relevant = logs.filter((log: any) => {
+        const gId = log.args?.groupId;
+        return gId != null && groupIdSet.has(Number(gId));
+      });
+      if (relevant.length === 0) return;
+      dispatch(relevant);
+      showPopups(relevant);
     };
 
     try {
       const unwatchGroupPot = client.watchContractEvent({
         address: CONTRACTS.GROUP_POT,
         abi: GROUP_POT_ABI,
-        args: { groupId: bigIntIds } as any,
         pollingInterval: POLLING_INTERVAL,
         onLogs,
       });
@@ -194,7 +216,6 @@ export function ContractEventProvider({
       const unwatchSplitSettler = client.watchContractEvent({
         address: CONTRACTS.SPLIT_SETTLER,
         abi: SPLIT_SETTLER_ABI,
-        args: { groupId: bigIntIds } as any,
         pollingInterval: POLLING_INTERVAL,
         onLogs,
       });
@@ -202,7 +223,7 @@ export function ContractEventProvider({
     } catch (err) {
       console.error("[ContractEvents] SplitSettler watcher failed:", err);
     }
-  }, [groupIds, stopWatchers, dispatch, showPopups]);
+  }, [stopWatchers, dispatch, showPopups]);
 
   // Start/restart watchers when groupIds change
   useEffect(() => {
