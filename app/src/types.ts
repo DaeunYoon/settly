@@ -3,7 +3,7 @@ export type RootStackParamList = {
   WalletSetup: undefined;
   Dashboard: undefined;
   CreateGroup: undefined;
-  JoinGroup: { groupId?: string; inviteCode?: string } | undefined;
+  JoinGroup: { groupId?: string; inviteCode?: string; token?: string } | undefined;
   GroupDetail: { groupId: number };
   Settings: undefined;
 };

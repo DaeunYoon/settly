@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import type { RouteProp } from "@react-navigation/native";
 import type { RootStackParamList } from "../types";
 import { getPublicClient, getWalletClient } from "../viem";
 import { CONTRACTS, GROUP_POT_ABI, ERC20_ABI } from "../contracts";
+import { API_URL } from "../storage";
 import { useContractEventContext } from "../contexts/ContractEventContext";
 import { CameraView, useCameraPermissions } from "expo-camera";
 
@@ -29,11 +30,38 @@ export default function JoinGroupScreen() {
   );
   const [inviteCode, setInviteCode] = useState(params?.inviteCode ?? "");
   const [loading, setLoading] = useState(false);
+  const [resolving, setResolving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<Mode>(params?.groupId ? "manual" : "choose");
+  const [mode, setMode] = useState<Mode>(
+    params?.groupId ? "manual" : params?.token ? "manual" : "choose"
+  );
   const [scanned, setScanned] = useState(false);
 
   const [permission, requestPermission] = useCameraPermissions();
+
+  // Resolve a single-use invite token to groupId + inviteCode
+  const resolveToken = async (token: string) => {
+    setResolving(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/api/invite-token/${encodeURIComponent(token)}`);
+      if (!res.ok) throw new Error("expired");
+      const data = await res.json();
+      setGroupId(data.groupId);
+      setInviteCode(data.inviteCode);
+      setMode("manual");
+    } catch {
+      setError("This invite link has expired or already been used.");
+    } finally {
+      setResolving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (params?.token) {
+      resolveToken(params.token);
+    }
+  }, [params?.token]);
 
   const handleJoin = async () => {
     if (!groupId.trim() || !inviteCode.trim()) {
@@ -84,16 +112,23 @@ export default function JoinGroupScreen() {
   };
 
   const parseQrData = (data: string) => {
-    // Match join/{groupId}/{inviteCode} in any URL format
-    const match = data.match(/join\/(\d+)\/(.+?)(?:\?|$)/);
-    if (match) {
-      setGroupId(match[1]);
-      setInviteCode(decodeURIComponent(match[2]));
+    // Legacy format: join/{groupId}/{inviteCode}
+    const legacyMatch = data.match(/join\/(\d+)\/(.+?)(?:\?|$)/);
+    if (legacyMatch) {
+      setGroupId(legacyMatch[1]);
+      setInviteCode(decodeURIComponent(legacyMatch[2]));
       setScanned(true);
       setMode("manual");
-    } else {
-      setError("Invalid QR code");
+      return;
     }
+    // Token format: join/{uuid}
+    const tokenMatch = data.match(/join\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\?|$)/i);
+    if (tokenMatch) {
+      setScanned(true);
+      resolveToken(tokenMatch[1]);
+      return;
+    }
+    setError("Invalid QR code");
   };
 
   const handleScanMode = async () => {
@@ -173,14 +208,20 @@ export default function JoinGroupScreen() {
   return (
     <View className="flex-1 bg-white pt-16 px-6">
       <Pressable
-        onPress={() => (params?.groupId ? navigation.goBack() : setMode("choose"))}
+        onPress={() => (params?.groupId || params?.token ? navigation.goBack() : setMode("choose"))}
         className="mb-6"
       >
         <Text className="text-gray-500">← Back</Text>
       </Pressable>
 
       <Text className="text-2xl font-bold text-gray-900 mb-2">Join Group</Text>
-      {scanned && (
+      {resolving && (
+        <View className="items-center my-4">
+          <ActivityIndicator size="small" />
+          <Text className="text-gray-500 text-sm mt-2">Resolving invite link...</Text>
+        </View>
+      )}
+      {scanned && !resolving && (
         <Text className="text-green-600 text-sm mb-4">
           QR code scanned successfully
         </Text>
@@ -209,7 +250,7 @@ export default function JoinGroupScreen() {
 
       <Pressable
         onPress={handleJoin}
-        disabled={loading}
+        disabled={loading || resolving}
         className="bg-black rounded-xl py-4 items-center"
       >
         {loading ? (

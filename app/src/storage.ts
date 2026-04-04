@@ -1,6 +1,6 @@
 import { getWalletClient } from "./viem";
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://localhost:3000";
+export const API_URL = process.env.EXPO_PUBLIC_API_URL || "http://localhost:3000";
 
 async function authHeaders(groupId: number): Promise<Record<string, string>> {
   const walletClient = await getWalletClient();
@@ -51,4 +51,18 @@ export async function deleteInviteCode(
     method: "DELETE",
     headers: auth,
   });
+}
+
+export async function createInviteToken(
+  groupId: number
+): Promise<string> {
+  const auth = await authHeaders(groupId);
+  const res = await fetch(`${API_URL}/api/invite-token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...auth },
+    body: JSON.stringify({ groupId: String(groupId) }),
+  });
+  if (!res.ok) throw new Error("Failed to create invite token");
+  const data = await res.json();
+  return data.token;
 }

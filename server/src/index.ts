@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import "dotenv/config";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
@@ -132,6 +133,60 @@ app.delete<{ Params: { groupId: string } }>(
 
     inviteCodes.delete(groupId);
     return { status: "ok" };
+  }
+);
+
+// ─── Invite Token Store (short-lived, single-use) ──────────
+
+type InviteToken = { groupId: string; inviteCode: string; expiresAt: number };
+const inviteTokens = new Map<string, InviteToken>();
+const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// Cleanup expired tokens every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, entry] of inviteTokens) {
+    if (now > entry.expiresAt) inviteTokens.delete(token);
+  }
+}, 5 * 60 * 1000);
+
+app.post<{ Body: { groupId: string } }>(
+  "/api/invite-token",
+  async (request, reply) => {
+    const { groupId } = request.body;
+    if (!groupId) return reply.status(400).send({ error: "groupId is required" });
+
+    const auth = await verifyMembership(groupId, request.headers);
+    if (!auth.ok) return reply.status(auth.status).send({ error: auth.error });
+
+    const inviteCode = inviteCodes.get(groupId);
+    if (!inviteCode) return reply.status(404).send({ error: "no invite code set for this group" });
+
+    const token = crypto.randomUUID();
+    inviteTokens.set(token, {
+      groupId,
+      inviteCode,
+      expiresAt: Date.now() + TOKEN_TTL_MS,
+    });
+
+    return { token };
+  }
+);
+
+app.get<{ Params: { token: string } }>(
+  "/api/invite-token/:token",
+  async (request, reply) => {
+    const { token } = request.params;
+    const entry = inviteTokens.get(token);
+
+    if (!entry || Date.now() > entry.expiresAt) {
+      inviteTokens.delete(token);
+      return reply.status(404).send({ error: "Invalid or expired invite link" });
+    }
+
+    // Single-use: delete after resolution
+    inviteTokens.delete(token);
+    return { groupId: entry.groupId, inviteCode: entry.inviteCode };
   }
 );
 

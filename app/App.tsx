@@ -26,12 +26,14 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const prefix = Linking.createURL("/");
 console.log("[Linking] prefix:", prefix);
 
-function parseJoinUrl(url: string): { groupId: string; inviteCode: string } | null {
+function parseJoinUrl(url: string): { token: string } | null {
   console.log("[Linking] parseJoinUrl input:", url);
-  const match = url.match(/join\/(\d+)\/(.+?)(?:\?|$)/);
-  console.log("[Linking] regex match:", match);
-  if (!match) return null;
-  return { groupId: match[1], inviteCode: decodeURIComponent(match[2]) };
+  const tokenMatch = url.match(/join\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\?|$)/i);
+  if (tokenMatch) {
+    console.log("[Linking] token match:", tokenMatch);
+    return { token: tokenMatch[1] };
+  }
+  return null;
 }
 
 const linking = {
@@ -39,11 +41,7 @@ const linking = {
   config: {
     screens: {
       JoinGroup: {
-        path: "join/:groupId/:inviteCode",
-        parse: {
-          groupId: (id: string) => id,
-          inviteCode: (code: string) => decodeURIComponent(code),
-        },
+        path: "join/:token",
       },
     },
   },
@@ -52,7 +50,7 @@ const linking = {
 export default function App() {
   const { auth, wallets } = useDynamic();
   const navRef = useRef<NavigationContainerRef<RootStackParamList>>(null);
-  const pendingJoin = useRef<{ groupId: string; inviteCode: string } | null>(null);
+  const pendingJoin = useRef<{ token: string } | null>(null);
 
   const isAuthenticated = !!auth.authenticatedUser;
   const hasWallet = !!wallets.embedded?.hasWallet;

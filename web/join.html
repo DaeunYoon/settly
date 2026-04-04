@@ -20,40 +20,52 @@
     .steps { text-align: left; background: #f5f5f5; border-radius: 16px; padding: 24px; margin-top: 24px; }
     .steps li { color: #666; margin-bottom: 8px; font-size: 15px; }
     .steps li:last-child { margin-bottom: 0; }
+    .loading { color: #999; font-size: 16px; margin: 32px 0; }
+    .error { color: #c55; font-size: 16px; margin: 24px 0; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>Settly</h1>
-    <p class="subtitle">You've been invited to join a group</p>
+    <p class="subtitle" id="subtitle">Resolving invite link...</p>
 
-    <div class="info">
-      <div class="label">Group ID</div>
-      <div class="value" id="groupId" onclick="copy('groupId')">—</div>
-      <div class="label">Invite Code</div>
-      <div class="value" id="inviteCode" onclick="copy('inviteCode')">—</div>
+    <!-- Loading state -->
+    <div id="loadingState">
+      <div class="loading">Please wait...</div>
     </div>
 
-    <a class="btn" id="openLink" href="#" style="display:block;text-align:center;">Open in Settly</a>
-    <button class="btn" style="background:#555" onclick="copyAll()">Copy Details</button>
-    <div class="copied" id="copiedMsg" style="display:none">Copied to clipboard!</div>
+    <!-- Error state -->
+    <div id="errorState" style="display:none">
+      <div class="error" id="errorMsg">This invite link has expired or already been used.</div>
+      <p class="note">Ask the group admin for a new invite link, or enter the details manually in the app.</p>
+    </div>
 
-    <ol class="steps">
-      <li>Tap <strong>Open in Settly</strong> above</li>
-      <li>If the app doesn't open, copy the details and enter them manually</li>
-    </ol>
+    <!-- Success state -->
+    <div id="successState" style="display:none">
+      <div class="info">
+        <div class="label">Group ID</div>
+        <div class="value" id="groupId" onclick="copy('groupId')">—</div>
+        <div class="label">Invite Code</div>
+        <div class="value" id="inviteCode" onclick="copy('inviteCode')">—</div>
+      </div>
 
-    <p class="note" id="devNote" style="display:none; color:#c55; margin-top:12px;"></p>
-    <p class="note">Tap any value to copy it.</p>
+      <a class="btn" id="openLink" href="#" style="display:block;text-align:center;">Open in Settly</a>
+      <button class="btn" style="background:#555" onclick="copyAll()">Copy Details</button>
+      <div class="copied" id="copiedMsg" style="display:none">Copied to clipboard!</div>
+
+      <ol class="steps">
+        <li>Tap <strong>Open in Settly</strong> above</li>
+        <li>If the app doesn't open, copy the details and enter them manually</li>
+      </ol>
+
+      <p class="note" id="devNote" style="display:none"></p>
+      <p class="note">Tap any value to copy it.</p>
+    </div>
   </div>
 
   <script>
-    var parts = window.location.pathname.split('/').filter(Boolean);
-    var groupId = parts[1] || '';
-    var inviteCode = decodeURIComponent(parts[2] || '');
-
-    document.getElementById('groupId').textContent = groupId || '—';
-    document.getElementById('inviteCode').textContent = inviteCode || '—';
+    var API_URL = 'http://10.105.177.151:3000';
+    var EXPO_HOST = '10.105.177.151:8081';
 
     function showCopied() {
       var msg = document.getElementById('copiedMsg');
@@ -66,25 +78,72 @@
       navigator.clipboard.writeText(text).then(showCopied);
     }
 
+    var resolvedGroupId = '';
+    var resolvedInviteCode = '';
+
     function copyAll() {
-      var text = 'Group ID: ' + groupId + '\nInvite Code: ' + inviteCode;
+      var text = 'Group ID: ' + resolvedGroupId + '\nInvite Code: ' + resolvedInviteCode;
       navigator.clipboard.writeText(text).then(showCopied);
     }
 
-    // Build deep link URLs with actual invite code from the URL path
-    var joinPath = 'join/' + groupId + '/' + encodeURIComponent(inviteCode);
-    var EXPO_HOST = '10.105.177.151:8081';
-    var expUrl = 'exp://' + EXPO_HOST + '/--/' + joinPath;
-    var settlyUrl = 'settly://' + joinPath;
+    function showSuccess(groupId, inviteCode) {
+      resolvedGroupId = groupId;
+      resolvedInviteCode = inviteCode;
 
-    var link = document.getElementById('openLink');
-    link.href = expUrl;
+      document.getElementById('groupId').textContent = groupId;
+      document.getElementById('inviteCode').textContent = inviteCode;
+      document.getElementById('subtitle').textContent = "You've been invited to join a group";
 
-    // Show both URLs for debugging
-    var note = document.getElementById('devNote');
-    note.style.display = 'block';
-    note.innerHTML = 'Expo Go: <a href="' + expUrl + '" style="color:#c55;word-break:break-all;">' + expUrl + '</a>'
-      + '<br><br>Production: <a href="' + settlyUrl + '" style="color:#c55;word-break:break-all;">' + settlyUrl + '</a>';
+      // Build deep link URLs
+      var joinPath = 'join/' + groupId + '/' + encodeURIComponent(inviteCode);
+      var expUrl = 'exp://' + EXPO_HOST + '/--/' + joinPath;
+      var settlyUrl = 'settly://' + joinPath;
+
+      var link = document.getElementById('openLink');
+      link.href = expUrl;
+
+      // Show debug URLs
+      var note = document.getElementById('devNote');
+      note.style.display = 'block';
+      note.innerHTML = 'Expo Go: <a href="' + expUrl + '" style="color:#c55;word-break:break-all;">' + expUrl + '</a>'
+        + '<br><br>Production: <a href="' + settlyUrl + '" style="color:#c55;word-break:break-all;">' + settlyUrl + '</a>';
+
+      document.getElementById('loadingState').style.display = 'none';
+      document.getElementById('successState').style.display = 'block';
+    }
+
+    function showError(msg) {
+      document.getElementById('subtitle').textContent = 'Invite link unavailable';
+      document.getElementById('errorMsg').textContent = msg || 'This invite link has expired or already been used.';
+      document.getElementById('loadingState').style.display = 'none';
+      document.getElementById('errorState').style.display = 'block';
+    }
+
+    // Parse URL segments
+    var parts = window.location.pathname.split('/').filter(Boolean);
+
+    if (parts.length >= 3) {
+      // Legacy format: /join/{groupId}/{inviteCode}
+      var groupId = parts[1];
+      var inviteCode = decodeURIComponent(parts[2]);
+      showSuccess(groupId, inviteCode);
+    } else if (parts.length >= 2) {
+      // New token format: /join/{token}
+      var token = parts[1];
+      fetch(API_URL + '/api/invite-token/' + encodeURIComponent(token))
+        .then(function(res) {
+          if (!res.ok) throw new Error('expired');
+          return res.json();
+        })
+        .then(function(data) {
+          showSuccess(data.groupId, data.inviteCode);
+        })
+        .catch(function() {
+          showError('This invite link has expired or already been used.');
+        });
+    } else {
+      showError('Invalid invite link.');
+    }
   </script>
 </body>
 </html>

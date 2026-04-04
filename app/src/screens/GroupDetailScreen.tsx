@@ -23,7 +23,7 @@ import {
   ERC20_ABI,
 } from "../contracts";
 import { formatUnits, parseUnits, keccak256, encodePacked } from "viem";
-import { getInviteCode, saveInviteCode, deleteInviteCode } from "../storage";
+import { getInviteCode, saveInviteCode, deleteInviteCode, createInviteToken } from "../storage";
 import { useGroupEvents } from "../hooks/useGroupEvents";
 
 
@@ -78,6 +78,7 @@ export default function GroupDetailScreen() {
   const [inviteModalVisible, setInviteModalVisible] = useState(false);
   const [storedInviteCode, setStoredInviteCode] = useState<string | null>(null);
   const [pendingCode, setPendingCode] = useState<string | null>(null);
+  const [qrUrl, setQrUrl] = useState<string | null>(null);
 
   const currencySymbol = (addr: string) =>
     addr.toLowerCase() === CONTRACTS.USDC.toLowerCase() ? "USDC" : "EURC";
@@ -330,6 +331,7 @@ export default function GroupDetailScreen() {
       setStoredInviteCode(code);
       setPendingCode(null);
       setInviteModalVisible(true);
+      refreshInviteUrl();
     } else {
       // Generate new code, show it to user before submitting tx
       const chars = "abcdefghijkmnpqrstuvwxyz23456789";
@@ -366,6 +368,7 @@ export default function GroupDetailScreen() {
       setPendingCode(null);
       // Reopen modal to show the confirmed code
       setInviteModalVisible(true);
+      refreshInviteUrl();
     } catch (e: any) {
       Alert.alert("Error", e.message ?? "Failed to set invite code");
       // Reopen modal so user can retry
@@ -412,16 +415,20 @@ export default function GroupDetailScreen() {
     );
   };
 
-  const buildInviteUrl = (code: string) => {
-    const host = process.env.EXPO_PUBLIC_EXPO_HOST;
-    return `exp://${host}/--/join/${groupId}/${encodeURIComponent(code)}`;
+  const refreshInviteUrl = async () => {
+    setQrUrl(null);
+    const webUrl = process.env.EXPO_PUBLIC_WEB_URL;
+    if (!webUrl) return;
+    try {
+      const token = await createInviteToken(Number(groupId));
+      setQrUrl(`${webUrl}/join/${token}`);
+    } catch {}
   };
 
   const handleShareLink = async () => {
     if (!storedInviteCode) return;
-    const link = buildInviteUrl(storedInviteCode);
-    const message = link
-      ? `Join "${group?.name}" on Settly!\n\n${link}`
+    const message = qrUrl
+      ? `Join "${group?.name}" on Settly!\n\n${qrUrl}`
       : `Join "${group?.name}" on Settly!\n\nGroup ID: ${groupId}\nInvite Code: ${storedInviteCode}`;
     try {
       await Share.share({ message });
@@ -800,11 +807,12 @@ export default function GroupDetailScreen() {
 
               {/* QR Code */}
               <View className="items-center mb-6">
-                <View className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
-                  <QrCodeSvg
-                    value={buildInviteUrl(storedInviteCode) ?? `settly://join/${groupId}/${storedInviteCode}`}
-                    frameSize={200}
-                  />
+                <View className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100" style={{ width: 232, height: 232, alignItems: "center", justifyContent: "center" }}>
+                  {qrUrl ? (
+                    <QrCodeSvg value={qrUrl} frameSize={200} />
+                  ) : (
+                    <ActivityIndicator size="small" />
+                  )}
                 </View>
                 <Text className="text-sm text-gray-500 mt-3">
                   Scan to join {group?.name}

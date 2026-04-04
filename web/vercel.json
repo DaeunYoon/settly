@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/join/:token", "destination": "/join.html" },
     { "source": "/join/:groupId/:inviteCode", "destination": "/join.html" }
   ]
 }
