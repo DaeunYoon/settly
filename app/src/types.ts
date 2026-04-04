@@ -1,7 +1,11 @@
 export type RootStackParamList = {
   Login: undefined;
   WalletSetup: undefined;
-  Home: undefined;
+  Dashboard: undefined;
+  CreateGroup: undefined;
+  JoinGroup: { groupId?: string; inviteCode?: string } | undefined;
+  GroupDetail: { groupId: number };
+  Settings: undefined;
 };
 
 declare global {

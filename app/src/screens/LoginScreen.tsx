@@ -8,11 +8,9 @@ export default function LoginScreen() {
 
   return (
     <View className="flex-1 items-center justify-center bg-white px-6">
-      <Text className="text-3xl font-bold text-gray-900 mb-2">
-        Joint Account
-      </Text>
+      <Text className="text-3xl font-bold text-gray-900 mb-2">Settly</Text>
       <Text className="text-base text-gray-500 mb-10 text-center">
-        A shared wallet for you and your partner
+        Group expenses on-chain
       </Text>
 
       <Pressable

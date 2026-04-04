@@ -114,7 +114,6 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
         bytes32 inviteCodeHash
     ) external returns (uint256 groupId) {
         require(baseCurrency == usdc || baseCurrency == eurc, "Invalid base currency");
-        require(inviteCodeHash != bytes32(0), "Invite code required");
 
         groupId = ++nextGroupId;
         Group storage g = groups[groupId];
@@ -122,7 +121,7 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
         g.creator = msg.sender;
         g.baseCurrency = baseCurrency;
         g.fundingGoal = fundingGoal;
-        g.inviteCodeHash = inviteCodeHash;
+        g.inviteCodeHash = inviteCodeHash; // bytes32(0) = locked
         g.members.push(msg.sender);
         memberOf[groupId][msg.sender] = true;
 
@@ -134,6 +133,7 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
         require(groups[groupId].creator != address(0), "Group does not exist");
         require(!memberOf[groupId][msg.sender], "Already a member");
         require(groups[groupId].members.length < MAX_GROUP_SIZE, "Group is full");
+        require(groups[groupId].inviteCodeHash != bytes32(0), "Group is locked");
         require(
             keccak256(abi.encodePacked(inviteCode)) == groups[groupId].inviteCodeHash,
             "Invalid invite code"
@@ -145,8 +145,8 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
         emit MemberJoined(groupId, msg.sender);
     }
 
+    /// @notice Set bytes32(0) to lock the group (no new joins). Set a new hash to reopen.
     function updateInviteCode(uint256 groupId, bytes32 newInviteCodeHash) external onlyMember(groupId) groupOpen(groupId) {
-        require(newInviteCodeHash != bytes32(0), "Invite code required");
         groups[groupId].inviteCodeHash = newInviteCodeHash;
         emit InviteCodeUpdated(groupId, msg.sender);
     }

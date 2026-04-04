@@ -51,11 +51,14 @@ contract GroupPotTest is Test {
 
     function _createGroup() internal returns (uint256) {
         vm.prank(alice);
-        return pot.createGroup("Trip", 1000e6, address(usdc), INVITE_HASH);
+        return pot.createGroup("Trip", 1000e6, address(usdc), bytes32(0));
     }
 
     function _createGroupWith3Members() internal returns (uint256) {
         uint256 gid = _createGroup();
+        // Unlock group for joining
+        vm.prank(alice);
+        pot.updateInviteCode(gid, INVITE_HASH);
         vm.prank(bob);
         pot.joinGroup(gid, INVITE_CODE);
         vm.prank(carol);
@@ -67,7 +70,7 @@ contract GroupPotTest is Test {
 
     function test_CreateGroup() public {
         vm.prank(alice);
-        uint256 gid = pot.createGroup("Trip", 1000e6, address(usdc), INVITE_HASH);
+        uint256 gid = pot.createGroup("Trip", 1000e6, address(usdc), bytes32(0));
 
         assertEq(gid, 1);
         assertTrue(pot.isMember(gid, alice));
@@ -90,6 +93,10 @@ contract GroupPotTest is Test {
     function test_JoinGroup() public {
         uint256 gid = _createGroup();
 
+        // Unlock group first
+        vm.prank(alice);
+        pot.updateInviteCode(gid, INVITE_HASH);
+
         vm.prank(bob);
         pot.joinGroup(gid, INVITE_CODE);
 
@@ -100,9 +107,40 @@ contract GroupPotTest is Test {
     function test_JoinGroup_RevertWrongInviteCode() public {
         uint256 gid = _createGroup();
 
+        // Unlock group
+        vm.prank(alice);
+        pot.updateInviteCode(gid, INVITE_HASH);
+
         vm.prank(bob);
         vm.expectRevert("Invalid invite code");
         pot.joinGroup(gid, "wrongcode");
+    }
+
+    function test_JoinGroup_RevertLocked() public {
+        uint256 gid = _createGroup();
+
+        // Group starts locked with bytes32(0)
+        vm.prank(bob);
+        vm.expectRevert("Group is locked");
+        pot.joinGroup(gid, INVITE_CODE);
+    }
+
+    function test_JoinGroup_UnlockWithNewCode() public {
+        uint256 gid = _createGroup();
+
+        // Lock
+        vm.prank(alice);
+        pot.updateInviteCode(gid, bytes32(0));
+
+        // Unlock with new code
+        string memory newCode = "newcode";
+        vm.prank(alice);
+        pot.updateInviteCode(gid, keccak256(abi.encodePacked(newCode)));
+
+        // Bob can join with new code
+        vm.prank(bob);
+        pot.joinGroup(gid, newCode);
+        assertTrue(pot.isMember(gid, bob));
     }
 
     function test_JoinGroup_RevertAlreadyMember() public {
@@ -115,6 +153,9 @@ contract GroupPotTest is Test {
 
     function test_JoinGroup_RevertGroupFull() public {
         uint256 gid = _createGroup();
+        // Unlock
+        vm.prank(alice);
+        pot.updateInviteCode(gid, INVITE_HASH);
         // Add 5 more members (total 6 = MAX_GROUP_SIZE)
         for (uint256 i = 1; i <= 5; i++) {
             address member = makeAddr(string(abi.encodePacked("member", i)));
@@ -330,6 +371,8 @@ contract GroupPotTest is Test {
 
     function test_ApprovalThreshold_2Members() public {
         uint256 gid = _createGroup();
+        vm.prank(alice);
+        pot.updateInviteCode(gid, INVITE_HASH);
         vm.prank(bob);
         pot.joinGroup(gid, INVITE_CODE);
 
@@ -354,6 +397,7 @@ contract GroupPotTest is Test {
     function test_ApprovalThreshold_4Members() public {
         uint256 gid = _createGroupWith3Members();
         address dave = makeAddr("dave");
+        // Group already unlocked by _createGroupWith3Members
         vm.prank(dave);
         pot.joinGroup(gid, INVITE_CODE);
 
