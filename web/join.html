@@ -86,6 +86,8 @@
       navigator.clipboard.writeText(text).then(showCopied);
     }
 
+    var currentToken = null;
+
     function showSuccess(groupId, inviteCode) {
       resolvedGroupId = groupId;
       resolvedInviteCode = inviteCode;
@@ -94,8 +96,10 @@
       document.getElementById('inviteCode').textContent = inviteCode;
       document.getElementById('subtitle').textContent = "You've been invited to join a group";
 
-      // Build deep link URLs
-      var joinPath = 'join/' + groupId + '/' + encodeURIComponent(inviteCode);
+      // Deep link with the original token so the app can resolve it
+      var joinPath = currentToken
+        ? 'join/' + currentToken
+        : 'join/' + groupId + '/' + encodeURIComponent(inviteCode);
       var expUrl = 'exp://' + EXPO_HOST + '/--/' + joinPath;
       var settlyUrl = 'settly://' + joinPath;
 
@@ -130,6 +134,7 @@
     } else if (parts.length >= 2) {
       // New token format: /join/{token}
       var token = parts[1];
+      currentToken = token;
       fetch(API_URL + '/api/invite-token/' + encodeURIComponent(token))
         .then(function(res) {
           if (!res.ok) throw new Error('expired');

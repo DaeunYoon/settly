@@ -11,6 +11,7 @@ import * as Linking from "expo-linking";
 import { dynamicClient } from "./src/dynamic-client";
 import { useDynamic } from "./src/hooks/useDynamic";
 import { ContractEventProvider } from "./src/contexts/ContractEventContext";
+import { setAuthToken } from "./src/storage";
 import type { RootStackParamList } from "./src/types";
 
 import LoginScreen from "./src/screens/LoginScreen";
@@ -58,6 +59,11 @@ export default function App() {
 
   console.log("[App] render — isAuthenticated:", isAuthenticated, "hasWallet:", hasWallet, "isReady:", isReady);
 
+  // Keep the auth token in sync for non-React API calls
+  useEffect(() => {
+    setAuthToken(auth.token ?? null);
+  }, [auth.token]);
+
   // Capture deep links that arrive before auth is complete
   useEffect(() => {
     // Check initial URL
@@ -70,13 +76,18 @@ export default function App() {
       }
     });
 
-    // Listen for URLs while unauthenticated
+    // Listen for deep link URLs
     const sub = Linking.addEventListener("url", ({ url }) => {
       console.log("[Linking] url event:", url, "isReady:", isReady);
-      if (!isReady) {
-        const params = parseJoinUrl(url);
-        console.log("[Linking] event parsed params:", params);
-        if (params) pendingJoin.current = params;
+      const params = parseJoinUrl(url);
+      console.log("[Linking] event parsed params:", params);
+      if (params) {
+        if (isReady) {
+          // Already authenticated — navigate immediately
+          navRef.current?.navigate("JoinGroup", params);
+        } else {
+          pendingJoin.current = params;
+        }
       }
     });
     return () => sub.remove();

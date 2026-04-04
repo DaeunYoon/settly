@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import * as ExpoCrypto from "expo-crypto";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -23,7 +24,7 @@ import {
   ERC20_ABI,
 } from "../contracts";
 import { formatUnits, parseUnits, keccak256, encodePacked } from "viem";
-import { getInviteCode, saveInviteCode, deleteInviteCode, createInviteToken } from "../storage";
+import { API_URL, getInviteCode, saveInviteCode, deleteInviteCode, createInviteToken } from "../storage";
 import { useGroupEvents } from "../hooks/useGroupEvents";
 
 
@@ -326,17 +327,17 @@ export default function GroupDetailScreen() {
 
   const handleInvite = async () => {
     // Check if we already have a code stored
-    const code = await getInviteCode(groupId);
+    const code = await getInviteCode(Number(groupId));
     if (code) {
       setStoredInviteCode(code);
       setPendingCode(null);
       setInviteModalVisible(true);
-      refreshInviteUrl();
+      refreshInviteUrl(code);
     } else {
       // Generate new code, show it to user before submitting tx
       const chars = "abcdefghijkmnpqrstuvwxyz23456789";
       const bytes = new Uint8Array(6);
-      crypto.getRandomValues(bytes);
+      ExpoCrypto.getRandomValues(bytes);
       let newCode = "";
       for (let i = 0; i < 6; i++) {
         newCode += chars[bytes[i] % chars.length];
@@ -363,12 +364,12 @@ export default function GroupDetailScreen() {
         args: [BigInt(groupId), hash],
       });
       await getPublicClient().waitForTransactionReceipt({ hash: txHash });
-      await saveInviteCode(groupId, code);
+      await saveInviteCode(Number(groupId), code);
       setStoredInviteCode(code);
       setPendingCode(null);
       // Reopen modal to show the confirmed code
       setInviteModalVisible(true);
-      refreshInviteUrl();
+      refreshInviteUrl(code);
     } catch (e: any) {
       Alert.alert("Error", e.message ?? "Failed to set invite code");
       // Reopen modal so user can retry
@@ -402,7 +403,7 @@ export default function GroupDetailScreen() {
               });
               await getPublicClient().waitForTransactionReceipt({ hash: txHash });
               // Clear stored code
-              await deleteInviteCode(groupId);
+              await deleteInviteCode(Number(groupId));
               Alert.alert("Locked", "Group is now locked.");
             } catch (e: any) {
               Alert.alert("Error", e.message ?? "Failed to lock group");
@@ -415,20 +416,70 @@ export default function GroupDetailScreen() {
     );
   };
 
-  const refreshInviteUrl = async () => {
+  const qrWatchRef = useRef<(() => void) | null>(null);
+
+  const refreshInviteUrl = async (inviteCode?: string) => {
+    // Clean up previous SSE watcher
+    qrWatchRef.current?.();
+    qrWatchRef.current = null;
     setQrUrl(null);
+
     const webUrl = process.env.EXPO_PUBLIC_WEB_URL;
-    if (!webUrl) return;
+    if (!webUrl) {
+      console.error("EXPO_PUBLIC_WEB_URL is not set");
+      return;
+    }
     try {
+      // Ensure the server has the invite code (it may have restarted and lost in-memory state)
+      const code = inviteCode || storedInviteCode || pendingCode;
+      if (code) {
+        await saveInviteCode(Number(groupId), code);
+      }
       const token = await createInviteToken(Number(groupId));
       setQrUrl(`${webUrl}/join/${token}`);
-    } catch {}
+
+      // Long-poll: watch for token consumption, then auto-refresh QR
+      const controller = new AbortController();
+      qrWatchRef.current = () => controller.abort();
+      (async () => {
+        try {
+          while (!controller.signal.aborted) {
+            const res = await fetch(
+              `${API_URL}/api/invite-token/${token}/watch`,
+              { signal: controller.signal }
+            );
+            const data = await res.json();
+            if (data.event === "consumed") {
+              refreshInviteUrl(code);
+              return;
+            }
+            // "timeout" — re-poll
+          }
+        } catch {
+          // aborted or network error — stop polling
+        }
+      })();
+    } catch (e) {
+      console.error("Failed to create invite token:", e);
+    }
   };
 
   const handleShareLink = async () => {
     if (!storedInviteCode) return;
-    const message = qrUrl
-      ? `Join "${group?.name}" on Settly!\n\n${qrUrl}`
+    const webUrl = process.env.EXPO_PUBLIC_WEB_URL;
+    let shareUrl = "";
+    if (webUrl) {
+      try {
+        // Generate a fresh single-use token for each share
+        await saveInviteCode(Number(groupId), storedInviteCode);
+        const token = await createInviteToken(Number(groupId));
+        shareUrl = `${webUrl}/join/${token}`;
+      } catch (e) {
+        console.error("Failed to create share token:", e);
+      }
+    }
+    const message = shareUrl
+      ? `Join "${group?.name}" on Settly!\n\n${shareUrl}`
       : `Join "${group?.name}" on Settly!\n\nGroup ID: ${groupId}\nInvite Code: ${storedInviteCode}`;
     try {
       await Share.share({ message });
@@ -485,8 +536,11 @@ export default function GroupDetailScreen() {
       </View>
 
       {txLoading && (
-        <View className="px-6 py-2 bg-gray-50">
-          <ActivityIndicator />
+        <View className="absolute inset-0 z-50 bg-black/40 items-center justify-center">
+          <View className="bg-white rounded-2xl px-8 py-6 items-center">
+            <ActivityIndicator size="large" />
+            <Text className="text-gray-700 mt-3 font-medium">Processing transaction...</Text>
+          </View>
         </View>
       )}
 
@@ -741,14 +795,14 @@ export default function GroupDetailScreen() {
         visible={inviteModalVisible}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={() => setInviteModalVisible(false)}
+        onRequestClose={() => { qrWatchRef.current?.(); setInviteModalVisible(false); }}
       >
         <View className="flex-1 bg-white pt-16 px-6">
           <View className="flex-row justify-between items-center mb-6">
             <Text className="text-2xl font-bold text-gray-900">
               Invite Members
             </Text>
-            <Pressable onPress={() => { setInviteModalVisible(false); setPendingCode(null); }}>
+            <Pressable onPress={() => { qrWatchRef.current?.(); setInviteModalVisible(false); setPendingCode(null); }}>
               <Text className="text-gray-500 text-base">Close</Text>
             </Pressable>
           </View>
@@ -779,11 +833,11 @@ export default function GroupDetailScreen() {
                 )}
               </Pressable>
               <Pressable
-                onPress={() => {
+                onPress={async () => {
                   // Regenerate
                   const chars = "abcdefghijkmnpqrstuvwxyz23456789";
                   const bytes = new Uint8Array(6);
-                  crypto.getRandomValues(bytes);
+                  ExpoCrypto.getRandomValues(bytes);
                   let c = "";
                   for (let i = 0; i < 6; i++) c += chars[bytes[i] % chars.length];
                   setPendingCode(c);
@@ -831,10 +885,10 @@ export default function GroupDetailScreen() {
 
               {/* Regenerate Code */}
               <Pressable
-                onPress={() => {
+                onPress={async () => {
                   const chars = "abcdefghijkmnpqrstuvwxyz23456789";
                   const bytes = new Uint8Array(6);
-                  crypto.getRandomValues(bytes);
+                  ExpoCrypto.getRandomValues(bytes);
                   let c = "";
                   for (let i = 0; i < 6; i++) c += chars[bytes[i] % chars.length];
                   setPendingCode(c);

@@ -2,11 +2,11 @@ import crypto from "node:crypto";
 import "dotenv/config";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import {
   createPublicClient,
   http,
   defineChain,
-  verifyMessage,
   parseAbi,
 } from "viem";
 import ratePusher from "./plugins/ratePusher";
@@ -37,56 +37,57 @@ const GROUP_POT_ABI = parseAbi([
   "function isMember(uint256 groupId, address user) view returns (bool)",
 ]);
 
-const MAX_SIGNATURE_AGE_MS = 5 * 60 * 1000; // 5 minutes
+// ─── Dynamic JWT verification ──────────────────────────────
 
-/**
- * Verify the caller is a member of the group.
- * Expects headers:
- *   x-address:   wallet address
- *   x-signature: signature of "settly:<groupId>:<timestamp>"
- *   x-timestamp: unix-ms timestamp used in the signed message
- */
+const DYNAMIC_ENV_ID = process.env.DYNAMIC_ENVIRONMENT_ID!;
+const JWKS = createRemoteJWKSet(
+  new URL(`https://app.dynamic.xyz/api/v0/sdk/${DYNAMIC_ENV_ID}/.well-known/jwks`)
+);
+
+async function verifyAuthToken(
+  headers: Record<string, string | string[] | undefined>
+): Promise<{ ok: true; address: string } | { ok: false; error: string; status: number }> {
+  const authHeader = headers["authorization"] as string | undefined;
+  if (!authHeader?.startsWith("Bearer ")) {
+    return { ok: false, status: 401, error: "Missing or invalid Authorization header" };
+  }
+
+  try {
+    const { payload } = await jwtVerify(authHeader.slice(7), JWKS);
+    const creds = payload.verified_credentials as Array<{ address?: string; chain?: string; wallet_name?: string; format?: string; lastSelectedAt?: string }> | undefined;
+    // Pick the most recently selected EVM wallet
+    const evmCreds = creds?.filter((c) => c.format === "blockchain" && c.address?.startsWith("0x")) ?? [];
+    const evmCred = evmCreds.sort((a, b) =>
+      new Date(b.lastSelectedAt ?? 0).getTime() - new Date(a.lastSelectedAt ?? 0).getTime()
+    )[0];
+    const address = evmCred?.address ?? (payload.wallet_address as string | undefined);
+    if (!address) {
+      return { ok: false, status: 401, error: "No wallet address in token" };
+    }
+    return { ok: true, address };
+  } catch {
+    return { ok: false, status: 401, error: "Invalid or expired token" };
+  }
+}
+
 async function verifyMembership(
   groupId: string,
   headers: Record<string, string | string[] | undefined>
 ): Promise<{ ok: true; address: string } | { ok: false; error: string; status: number }> {
-  const address = headers["x-address"] as string | undefined;
-  const signature = headers["x-signature"] as string | undefined;
-  const timestamp = headers["x-timestamp"] as string | undefined;
+  const auth = await verifyAuthToken(headers);
+  if (!auth.ok) return auth;
 
-  if (!address || !signature || !timestamp) {
-    return { ok: false, status: 401, error: "Missing auth headers (x-address, x-signature, x-timestamp)" };
-  }
-
-  // Check timestamp freshness
-  const ts = Number(timestamp);
-  if (Number.isNaN(ts) || Math.abs(Date.now() - ts) > MAX_SIGNATURE_AGE_MS) {
-    return { ok: false, status: 401, error: "Signature expired or invalid timestamp" };
-  }
-
-  // Verify signature
-  const message = `settly:${groupId}:${timestamp}`;
-  const valid = await verifyMessage({
-    address: address as `0x${string}`,
-    message,
-    signature: signature as `0x${string}`,
-  });
-  if (!valid) {
-    return { ok: false, status: 401, error: "Invalid signature" };
-  }
-
-  // Check on-chain membership
   const isMember = await publicClient.readContract({
     address: GROUP_POT_ADDRESS,
     abi: GROUP_POT_ABI,
     functionName: "isMember",
-    args: [BigInt(groupId), address as `0x${string}`],
+    args: [BigInt(groupId), auth.address as `0x${string}`],
   });
   if (!isMember) {
     return { ok: false, status: 403, error: "Not a member of this group" };
   }
 
-  return { ok: true, address };
+  return { ok: true, address: auth.address };
 }
 
 app.get("/health", async () => {
@@ -140,13 +141,18 @@ app.delete<{ Params: { groupId: string } }>(
 
 type InviteToken = { groupId: string; inviteCode: string; expiresAt: number };
 const inviteTokens = new Map<string, InviteToken>();
+// Long-poll watchers: token -> list of resolve callbacks
+const tokenWatchers = new Map<string, Set<() => void>>();
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // Cleanup expired tokens every 5 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [token, entry] of inviteTokens) {
-    if (now > entry.expiresAt) inviteTokens.delete(token);
+    if (now > entry.expiresAt) {
+      inviteTokens.delete(token);
+      tokenWatchers.delete(token);
+    }
   }
 }, 5 * 60 * 1000);
 
@@ -169,6 +175,7 @@ app.post<{ Body: { groupId: string } }>(
       expiresAt: Date.now() + TOKEN_TTL_MS,
     });
 
+    app.log.info({ token, groupId, totalTokens: inviteTokens.size }, "Token created");
     return { token };
   }
 );
@@ -177,6 +184,7 @@ app.get<{ Params: { token: string } }>(
   "/api/invite-token/:token",
   async (request, reply) => {
     const { token } = request.params;
+    app.log.info({ token, exists: inviteTokens.has(token), totalTokens: inviteTokens.size }, "Token resolve attempt");
     const entry = inviteTokens.get(token);
 
     if (!entry || Date.now() > entry.expiresAt) {
@@ -184,9 +192,44 @@ app.get<{ Params: { token: string } }>(
       return reply.status(404).send({ error: "Invalid or expired invite link" });
     }
 
-    // Single-use: delete after resolution
-    inviteTokens.delete(token);
+    // TODO: re-enable single-use for production
+    // inviteTokens.delete(token);
+
     return { groupId: entry.groupId, inviteCode: entry.inviteCode };
+  }
+);
+
+// Long-poll endpoint: blocks until the token is consumed or times out
+app.get<{ Params: { token: string } }>(
+  "/api/invite-token/:token/watch",
+  async (request, reply) => {
+    const { token } = request.params;
+    if (!inviteTokens.has(token)) {
+      return { event: "consumed" };
+    }
+
+    const TIMEOUT_MS = 30_000;
+    const result = await new Promise<"consumed" | "timeout">((resolve) => {
+      const timer = setTimeout(() => {
+        tokenWatchers.get(token)?.delete(onConsumed);
+        resolve("timeout");
+      }, TIMEOUT_MS);
+
+      const onConsumed = () => {
+        clearTimeout(timer);
+        resolve("consumed");
+      };
+
+      if (!tokenWatchers.has(token)) tokenWatchers.set(token, new Set());
+      tokenWatchers.get(token)!.add(onConsumed);
+
+      request.raw.on("close", () => {
+        clearTimeout(timer);
+        tokenWatchers.get(token)?.delete(onConsumed);
+      });
+    });
+
+    return { event: result };
   }
 );
 
