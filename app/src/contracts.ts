@@ -90,7 +90,7 @@ export const ERC20_ABI = parseAbi([
 // Placeholder addresses — update after deployment
 export const YIELD_CONTRACTS = {
   // Arc Testnet
-  YIELD_MANAGER: "0x9e743A8AAf98c284D5200024920a6F182bDEc3b6",
+  YIELD_MANAGER: "0x9798c7B376bCfF3Eac99532061d8C22473339766",
   // Base Sepolia
   YIELD_STRATEGY: "0xf7CEd01B0109DA9c5Df8dA46f28E837Da148F311",
   SUSDS_VAULT: "0x180BdF64fb8753100f6E44516Ea6ed70e7c7521e",  // accepts USDC, 3.75% APY
