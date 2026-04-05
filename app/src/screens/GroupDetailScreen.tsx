@@ -25,11 +25,12 @@ import {
   ERC20_ABI,
 } from "../contracts";
 import { formatUnits, parseUnits, keccak256, encodePacked } from "viem";
-import { API_URL, getInviteCode, saveInviteCode, deleteInviteCode, createInviteToken } from "../storage";
+import { API_URL, getInviteCode, saveInviteCode, deleteInviteCode, createInviteToken, enableYield, getYieldStatus, withdrawYield, topUpYield, type YieldStatus } from "../storage";
+import { YIELD_CONTRACTS, YIELD_MANAGER_ABI } from "../contracts";
 import { useGroupEvents } from "../hooks/useGroupEvents";
 
 
-type Tab = "pot" | "split" | "members";
+type Tab = "pot" | "split" | "members" | "yield";
 
 type GroupData = {
   name: string;
@@ -78,6 +79,14 @@ export default function GroupDetailScreen() {
   const [reimbDesc, setReimbDesc] = useState("");
   const [expenseAmount, setExpenseAmount] = useState("");
   const [expenseDesc, setExpenseDesc] = useState("");
+
+  // Yield
+  const [yieldStatus, setYieldStatus] = useState<YieldStatus | null>(null);
+  const [selectedStrategy, setSelectedStrategy] = useState<number>(0);
+  const [yieldLoading, setYieldLoading] = useState(false);
+  const [projectionDays, setProjectionDays] = useState(90);
+  const prevYieldPendingRef = useRef<number | null>(null);
+  const justVotedRef = useRef(false);
 
   // Invite
   const [inviteModalVisible, setInviteModalVisible] = useState(false);
@@ -185,6 +194,79 @@ export default function GroupDetailScreen() {
       });
       const rawSettlements = settlementsResult as { from: string; to: string; amount: bigint }[];
       setSettlements(rawSettlements.map((s) => ({ from: s.from, to: s.to, amount: s.amount })));
+
+      // Load yield status directly from on-chain (no backend cache)
+      try {
+        const yieldInfo = await client.readContract({
+          address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+          abi: YIELD_MANAGER_ABI,
+          functionName: "getYieldInfo",
+          args: [BigInt(groupId)],
+        });
+        const yieldVotes = await client.readContract({
+          address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+          abi: YIELD_MANAGER_ABI,
+          functionName: "getYieldVotes",
+          args: [BigInt(groupId)],
+        });
+        const [strategy, phase, bridgedAmount, currentValue] = yieldInfo;
+        const [lastUpdated, enableVoteCount, withdrawVoteCount, votesNeeded] = yieldVotes;
+
+        const [userHasVotedEnable, userHasVotedWithdraw, canPropose] = await Promise.all([
+          userAddress
+            ? client.readContract({
+                address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+                abi: YIELD_MANAGER_ABI,
+                functionName: "hasVotedCurrentEnable",
+                args: [BigInt(groupId), userAddress as `0x${string}`],
+              })
+            : false,
+          userAddress
+            ? client.readContract({
+                address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+                abi: YIELD_MANAGER_ABI,
+                functionName: "hasVotedCurrentWithdraw",
+                args: [BigInt(groupId), userAddress as `0x${string}`],
+              })
+            : false,
+          client.readContract({
+            address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+            abi: YIELD_MANAGER_ABI,
+            functionName: "canProposeYield",
+            args: [BigInt(groupId)],
+          }),
+        ]);
+
+        // Detect yield approval transition: was voting, now approved
+        const prevPhase = prevYieldPendingRef.current;
+        const justApproved = prevPhase === 1 && Number(phase) >= 2; // EnableVoting -> EnableApproved+
+        if (justApproved && !justVotedRef.current && userHasVotedEnable) {
+          Alert.alert("Yield Farming Approved", "All members approved! Yield farming is now being activated.");
+        }
+        prevYieldPendingRef.current = Number(phase);
+        justVotedRef.current = false;
+
+        setYieldStatus({
+          strategy: Number(strategy),
+          phase: Number(phase),
+          bridgedAmount: formatUnits(bridgedAmount, 6),
+          currentValue: formatUnits(currentValue, 6),
+          yieldPercent: bridgedAmount > 0n
+            ? (((Number(currentValue) - Number(bridgedAmount)) / Number(bridgedAmount)) * 100).toFixed(4)
+            : "0.0000",
+          lastUpdated: Number(lastUpdated),
+          enableVoteCount: Number(enableVoteCount),
+          withdrawVoteCount: Number(withdrawVoteCount),
+          votesNeeded: Number(votesNeeded),
+          userHasVotedEnable,
+          userHasVotedWithdraw,
+          canPropose,
+          breakdown: null,
+          swapTxs: [],
+        });
+      } catch {
+        // Yield not configured yet — that's fine
+      }
     } catch (err) {
       console.error("Failed to load group:", err);
     } finally {
@@ -557,14 +639,16 @@ export default function GroupDetailScreen() {
         </Pressable>
         <Text className="text-2xl font-bold text-gray-900">{group.name}</Text>
         <Text className="text-sm text-gray-500">
-          {formatUnits(group.potBalance, 6)} {currencySymbol(group.baseCurrency)}{" "}
-          in pot · {group.members.length} members
+          {yieldStatus?.phase === 2 && group.potBalance === 0n
+            ? "Bridging funds to yield..."
+            : `${formatUnits(group.potBalance, 6)} ${currencySymbol(group.baseCurrency)} in pot`
+          } · {group.members.length} members
         </Text>
       </View>
 
       {/* Tabs */}
       <View className="flex-row border-b border-gray-200 px-6">
-        {(["pot", "split", "members"] as Tab[]).map((t) => (
+        {(["pot", "split", "yield", "members"] as Tab[]).map((t) => (
           <Pressable
             key={t}
             onPress={() => setTab(t)}
@@ -848,6 +932,497 @@ export default function GroupDetailScreen() {
                       <Text className="text-gray-400 text-sm">Pending</Text>
                     </View>
                   ))}
+              </>
+            )}
+          </>
+        )}
+
+        {/* ─── Yield Tab ─── */}
+        {tab === "yield" && (
+          <>
+            {yieldLoading && (
+              <View className="bg-purple-100 rounded-xl px-4 py-3 mb-3 flex-row items-center">
+                <ActivityIndicator size="small" color="#9333ea" />
+                <Text className="text-purple-700 text-sm font-medium ml-2">
+                  Processing yield transaction...
+                </Text>
+              </View>
+            )}
+            {yieldStatus?.phase === 2 ? (
+              <View className="bg-purple-50 rounded-xl p-6 items-center mt-4">
+                <ActivityIndicator size="large" color="#9333ea" />
+                <Text className="text-lg font-semibold text-purple-800 mt-4">
+                  Bridging Funds to Yield
+                </Text>
+                <Text className="text-sm text-purple-600 mt-2 text-center">
+                  Your funds are being bridged to Base Sepolia and deposited into the yield strategy. This may take a minute.
+                </Text>
+              </View>
+            ) : (!yieldStatus || yieldStatus.canPropose || yieldStatus.phase === 1) ? (
+              <>
+                <Text className="font-semibold text-gray-900 mb-1">Yield Farming</Text>
+                <Text className="text-sm text-gray-500 mb-4">
+                  Bridge idle pot funds to Base and earn yield via DeFi protocols.
+                </Text>
+
+                {/* Strategy Cards */}
+                {[
+                  { id: 0, emoji: "\ud83d\udfe2", name: "Conservative", desc: "100% sUSDS", apy: "~3.75% APY", risk: "Very low risk", color: "bg-green-50 border-green-200" },
+                  { id: 1, emoji: "\ud83d\udfe1", name: "Balanced", desc: "50% sUSDS + 50% sUSDe", apy: "~5-6% APY", risk: "Medium risk", color: "bg-yellow-50 border-yellow-200" },
+                  { id: 2, emoji: "\ud83d\udd34", name: "Aggressive", desc: "50% sUSDS + 50% WETH", apy: "Variable", risk: "High risk \u2014 ETH exposure", color: "bg-red-50 border-red-200" },
+                ].map((s) => {
+                  const votePending = yieldStatus?.phase === 1;
+                  const activeStrategy = votePending ? yieldStatus.strategy : selectedStrategy;
+                  const isSelected = activeStrategy === s.id;
+                  const isDisabled = votePending && s.id !== yieldStatus.strategy;
+                  return (
+                  <Pressable
+                    key={s.id}
+                    onPress={() => !votePending && setSelectedStrategy(s.id)}
+                    disabled={votePending}
+                    className={`rounded-xl p-4 mb-3 border-2 ${
+                      isSelected ? s.color : "bg-gray-50 border-transparent"
+                    } ${isDisabled ? "opacity-30" : ""}`}
+                  >
+                    <View className="flex-row items-center mb-1">
+                      <Text className="text-lg mr-2">{s.emoji}</Text>
+                      <Text className="font-semibold text-gray-900">{s.name}</Text>
+                      <Text className="ml-auto text-sm font-medium text-gray-600">{s.apy}</Text>
+                    </View>
+                    <Text className="text-sm text-gray-500">{s.desc}</Text>
+                    <Text className="text-xs text-gray-400 mt-1">{s.risk}</Text>
+                  </Pressable>
+                  );
+                })}
+
+                {/* Vote progress if pending */}
+                {yieldStatus?.phase === 1 && (
+                  <View className="bg-blue-50 rounded-xl p-4 mb-3">
+                    <Text className="text-sm text-blue-800 font-medium">
+                      Vote in progress: {yieldStatus.enableVoteCount}/{yieldStatus.votesNeeded} approvals needed
+                    </Text>
+                    {yieldStatus.userHasVotedEnable && (
+                      <Text className="text-xs text-blue-600 mt-1">You have already voted.</Text>
+                    )}
+                  </View>
+                )}
+
+                {/* Empty pot warning — only in Idle phase (not during active yield where potBalance is 0 from bridging) */}
+                {group.potBalance === 0n && (!yieldStatus || yieldStatus.phase === 0) && (
+                  <View className="bg-yellow-50 rounded-xl p-4 mb-3">
+                    <Text className="text-sm text-yellow-800 font-medium">
+                      Deposit funds into the pot before enabling yield farming.
+                    </Text>
+                  </View>
+                )}
+
+                {/* Smart enable button — handles all states */}
+                <Pressable
+                  onPress={async () => {
+                    if (!group) return;
+                    setYieldLoading(true);
+                    try {
+                      const walletClient = await getWalletClient();
+                      const strategy = yieldStatus?.phase === 1 ? yieldStatus.strategy : selectedStrategy;
+
+                      // Step 1: on-chain vote (propose or vote yes)
+                      const strategyName = strategy === 0 ? "Conservative" : strategy === 1 ? "Balanced" : "Aggressive";
+                      if (yieldStatus?.phase !== 1) {
+                        // No vote yet — propose (auto-votes yes)
+                        const proposeHash = await walletClient.writeContract({
+                          address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+                          abi: YIELD_MANAGER_ABI,
+                          functionName: "proposeEnableYield",
+                          args: [BigInt(groupId), strategy],
+                        });
+                        await getPublicClient().waitForTransactionReceipt({ hash: proposeHash });
+
+                        // Check if the proposal auto-passed (e.g. single-member group)
+                        const postProposeInfo = await getPublicClient().readContract({
+                          address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+                          abi: YIELD_MANAGER_ABI,
+                          functionName: "getYieldInfo",
+                          args: [BigInt(groupId)],
+                        });
+                        const [postStrategy, postPhase] = postProposeInfo;
+                        if (postPhase >= 2) {
+                          // Vote auto-passed — trigger backend enable
+                          justVotedRef.current = true;
+                          try {
+                            await enableYield(Number(groupId), Number(postStrategy));
+                          } catch {
+                            // backend enable may fail, but vote already passed on-chain
+                          }
+                          Alert.alert("Yield Enabled", `${strategyName} strategy is now being activated.`);
+                        } else {
+                          Alert.alert(
+                            "Yield Proposal Created",
+                            `You proposed the ${strategyName} strategy. Other members need to vote to enable yield farming.`
+                          );
+                        }
+                      } else if (yieldStatus.enableVoteCount < yieldStatus.votesNeeded) {
+                        // Vote pending, need more votes — vote yes
+                        const voteHash = await walletClient.writeContract({
+                          address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+                          abi: YIELD_MANAGER_ABI,
+                          functionName: "voteEnableYield",
+                          args: [BigInt(groupId), true],
+                        });
+                        await getPublicClient().waitForTransactionReceipt({ hash: voteHash });
+
+                        // Check if the vote passed by reading updated on-chain state
+                        const updatedInfo = await getPublicClient().readContract({
+                          address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+                          abi: YIELD_MANAGER_ABI,
+                          functionName: "getYieldInfo",
+                          args: [BigInt(groupId)],
+                        });
+                        const [updatedStrategy, updatedPhase] = updatedInfo;
+                        if (updatedPhase >= 2) { // EnableApproved or beyond
+                          // Vote passed — trigger backend enable using contract-confirmed strategy
+                          justVotedRef.current = true;
+                          try {
+                            await enableYield(Number(groupId), Number(updatedStrategy));
+                          } catch {
+                            // backend enable may fail, but vote already passed on-chain
+                          }
+                          Alert.alert("Vote Recorded", "Your vote has been recorded. Yield farming is now being activated.");
+                        } else {
+                          Alert.alert("Vote Recorded", `Your vote has been recorded. Waiting for more members to vote.`);
+                        }
+                      }
+
+                      loadGroup();
+                    } catch (e: any) {
+                      Alert.alert("Error", e.message ?? "Failed to enable yield");
+                    } finally {
+                      setYieldLoading(false);
+                    }
+                  }}
+                  disabled={yieldLoading || (group.potBalance === 0n && yieldStatus?.phase !== 1) || (yieldStatus?.phase === 1 && yieldStatus.userHasVotedEnable && yieldStatus.enableVoteCount < yieldStatus.votesNeeded)}
+                  className={`rounded-xl py-3 items-center mb-4 ${
+                    (group.potBalance === 0n && yieldStatus?.phase !== 1) || (yieldStatus?.phase === 1 && yieldStatus.userHasVotedEnable && yieldStatus.enableVoteCount < yieldStatus.votesNeeded)
+                      ? "bg-gray-300"
+                      : yieldStatus?.phase === 1 ? "bg-blue-600" : "bg-black"
+                  }`}
+                >
+                  {yieldLoading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text className="text-white font-semibold">
+                      {yieldStatus?.phase === 1
+                        ? yieldStatus.userHasVotedEnable
+                          ? "Already Voted"
+                          : "Vote Yes"
+                        : "Enable Yield Farming"}
+                    </Text>
+                  )}
+                </Pressable>
+
+                {/* Vote No button — only when vote is pending and not yet passed */}
+                {yieldStatus?.phase === 1 && yieldStatus.enableVoteCount < yieldStatus.votesNeeded && !yieldStatus.userHasVotedEnable && (
+                  <Pressable
+                    onPress={async () => {
+                      setYieldLoading(true);
+                      try {
+                        const walletClient = await getWalletClient();
+                        const voteHash = await walletClient.writeContract({
+                          address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+                          abi: YIELD_MANAGER_ABI,
+                          functionName: "voteEnableYield",
+                          args: [BigInt(groupId), false],
+                        });
+                        await getPublicClient().waitForTransactionReceipt({ hash: voteHash });
+
+                        // Check if the proposal was rejected
+                        const updatedInfo = await getPublicClient().readContract({
+                          address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+                          abi: YIELD_MANAGER_ABI,
+                          functionName: "getYieldInfo",
+                          args: [BigInt(groupId)],
+                        });
+                        const [, updatedPhase2] = updatedInfo;
+                        if (updatedPhase2 === 0) { // Idle — proposal was rejected
+                          Alert.alert("Yield Proposal Rejected", "The proposal has been rejected. A new proposal can now be made.");
+                        } else {
+                          Alert.alert("Vote Recorded", "Your vote has been recorded. Waiting for more members to vote.");
+                        }
+                        loadGroup();
+                      } catch (e: any) {
+                        Alert.alert("Error", e.message ?? "Failed to vote");
+                      } finally {
+                        setYieldLoading(false);
+                      }
+                    }}
+                    disabled={yieldLoading}
+                    className="border border-red-300 rounded-xl py-3 items-center mb-4 -mt-2"
+                  >
+                    <Text className="text-red-500 font-semibold">Vote No</Text>
+                  </Pressable>
+                )}
+              </>
+            ) : (
+              <>
+                {/* Yield Enabled State */}
+                <View className="flex-row items-center mb-4">
+                  <Text className="text-lg mr-2">
+                    {yieldStatus.strategy === 0 ? "\ud83d\udfe2" : yieldStatus.strategy === 1 ? "\ud83d\udfe1" : "\ud83d\udd34"}
+                  </Text>
+                  <Text className="font-semibold text-gray-900">
+                    {yieldStatus.strategy === 0 ? "Conservative" : yieldStatus.strategy === 1 ? "Balanced" : "Aggressive"}
+                  </Text>
+                  <View className={`ml-2 px-2 py-0.5 rounded-full ${
+                    Number(yieldStatus.yieldPercent) >= 0 ? "bg-green-100" : "bg-red-100"
+                  }`}>
+                    <Text className={`text-xs font-medium ${
+                      Number(yieldStatus.yieldPercent) >= 0 ? "text-green-700" : "text-red-700"
+                    }`}>
+                      {Number(yieldStatus.yieldPercent) >= 0 ? "+" : ""}{yieldStatus.yieldPercent}%
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Current Value */}
+                <View className="bg-gray-50 rounded-xl p-6 items-center mb-4">
+                  <Text className="text-xs text-gray-400 mb-1">Current Value</Text>
+                  <Text className="text-3xl font-bold text-gray-900">
+                    ${Number(yieldStatus.currentValue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </Text>
+                  <Text className="text-sm text-gray-500 mt-1">
+                    Deposited: ${Number(yieldStatus.bridgedAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </Text>
+                </View>
+
+                {/* Allocation Breakdown */}
+                {yieldStatus.breakdown && (
+                  <>
+                    <Text className="font-semibold text-gray-900 mb-2">Allocation</Text>
+                    {Number(yieldStatus.breakdown.msUSDS_value) > 0 && (
+                      <View className="flex-row justify-between py-2 border-b border-gray-100">
+                        <Text className="text-gray-700">sUSDS</Text>
+                        <Text className="text-gray-900 font-medium">
+                          ${Number(yieldStatus.breakdown.msUSDS_value).toFixed(2)}
+                        </Text>
+                      </View>
+                    )}
+                    {Number(yieldStatus.breakdown.msUSDe_value) > 0 && (
+                      <View className="flex-row justify-between py-2 border-b border-gray-100">
+                        <Text className="text-gray-700">sUSDe</Text>
+                        <Text className="text-gray-900 font-medium">
+                          ${Number(yieldStatus.breakdown.msUSDe_value).toFixed(2)}
+                        </Text>
+                      </View>
+                    )}
+                    {Number(yieldStatus.breakdown.weth_value) > 0 && (
+                      <View className="flex-row justify-between py-2 border-b border-gray-100">
+                        <Text className="text-gray-700">WETH</Text>
+                        <Text className="text-gray-900 font-medium">
+                          {Number(yieldStatus.breakdown.weth_value).toFixed(6)} ETH
+                        </Text>
+                      </View>
+                    )}
+                  </>
+                )}
+
+                {/* Uniswap Swap Transactions */}
+                {yieldStatus.swapTxs && yieldStatus.swapTxs.length > 0 && (
+                  <View className="mt-4">
+                    <Text className="font-semibold text-gray-900 mb-2">Uniswap Swaps</Text>
+                    {yieldStatus.swapTxs.map((tx, i) => (
+                      <View key={i} className="bg-purple-50 rounded-lg p-3 mb-2">
+                        <Text className="text-xs text-purple-800 font-mono">
+                          {tx.txHash.slice(0, 10)}...{tx.txHash.slice(-8)}
+                        </Text>
+                        <Text className="text-xs text-gray-500">{tx.timestamp}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {/* Projected Earnings Calculator */}
+                <View className="mt-4 mb-2">
+                  <Text className="font-semibold text-gray-900 mb-2">Projected Earnings</Text>
+                  <View className="flex-row gap-2 mb-3">
+                    {[
+                      { label: "1M", days: 30 },
+                      { label: "3M", days: 90 },
+                      { label: "6M", days: 180 },
+                      { label: "1Y", days: 365 },
+                    ].map((period) => {
+                      const apyByStrategy: Record<number, number> = { 0: 0.0375, 1: 0.06125, 2: 0.0375 };
+                      const apy = apyByStrategy[yieldStatus.strategy] ?? 0.0375;
+                      const deposited = Number(yieldStatus.bridgedAmount);
+                      const projected = deposited * (1 + apy * period.days / 365);
+                      const earned = projected - deposited;
+                      const isSelected = projectionDays === period.days;
+                      return (
+                        <Pressable
+                          key={period.days}
+                          onPress={() => setProjectionDays(period.days)}
+                          className={`flex-1 rounded-xl py-3 items-center ${
+                            isSelected ? "bg-purple-600" : "bg-gray-100"
+                          }`}
+                        >
+                          <Text className={`text-xs font-semibold ${isSelected ? "text-white" : "text-gray-600"}`}>
+                            {period.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  {(() => {
+                    const apyByStrategy: Record<number, number> = { 0: 0.0375, 1: 0.06125, 2: 0.0375 };
+                    const apy = apyByStrategy[yieldStatus.strategy] ?? 0.0375;
+                    const deposited = Number(yieldStatus.bridgedAmount);
+                    const projected = deposited * (1 + apy * projectionDays / 365);
+                    const earned = projected - deposited;
+                    const targetDate = new Date();
+                    targetDate.setDate(targetDate.getDate() + projectionDays);
+                    return (
+                      <View className="bg-purple-50 rounded-xl p-4">
+                        <View className="flex-row justify-between mb-1">
+                          <Text className="text-sm text-gray-600">By {targetDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</Text>
+                          <Text className="text-sm font-semibold text-purple-700">+${earned.toFixed(2)}</Text>
+                        </View>
+                        <View className="flex-row justify-between">
+                          <Text className="text-xs text-gray-400">Projected value</Text>
+                          <Text className="text-xs text-gray-600">${projected.toFixed(2)}</Text>
+                        </View>
+                        <View className="flex-row justify-between mt-1">
+                          <Text className="text-xs text-gray-400">APY</Text>
+                          <Text className="text-xs text-gray-600">{(apy * 100).toFixed(2)}%{yieldStatus.strategy === 2 ? " (stablecoin portion)" : ""}</Text>
+                        </View>
+                        {yieldStatus.strategy === 2 && (
+                          <Text className="text-xs text-gray-400 mt-2 italic">
+                            WETH portion depends on ETH price — not included in projection
+                          </Text>
+                        )}
+                      </View>
+                    );
+                  })()}
+                </View>
+
+                {/* Actions */}
+                <View className="mt-2 gap-3">
+                  {/* Propose Withdrawal */}
+                  {yieldStatus.phase === 3 && ( /* Active — can propose withdrawal */
+                    <Pressable
+                      onPress={async () => {
+                        setYieldLoading(true);
+                        try {
+                          const walletClient = await getWalletClient();
+                          const hash = await walletClient.writeContract({
+                            address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+                            abi: YIELD_MANAGER_ABI,
+                            functionName: "proposeWithdraw",
+                            args: [BigInt(groupId)],
+                          });
+                          await getPublicClient().waitForTransactionReceipt({ hash });
+                          Alert.alert("Proposed", "Withdrawal proposed. Members need to vote.");
+                          loadGroup();
+                        } catch (e: any) {
+                          Alert.alert("Error", e.message ?? "Failed to propose withdrawal");
+                        } finally {
+                          setYieldLoading(false);
+                        }
+                      }}
+                      disabled={yieldLoading}
+                      className={`border border-red-300 rounded-xl py-3 items-center ${yieldLoading ? "opacity-50" : ""}`}
+                    >
+                      {yieldLoading ? (
+                        <ActivityIndicator color="#ef4444" />
+                      ) : (
+                        <Text className="text-red-500 font-semibold">Propose Withdrawal</Text>
+                      )}
+                    </Pressable>
+                  )}
+                  {yieldStatus.phase === 4 && ( /* WithdrawVoting — members vote */
+                    <>
+                      <View className="bg-orange-50 rounded-xl p-4">
+                        <Text className="text-sm text-orange-800 font-medium mb-1">
+                          Withdrawal Vote: {yieldStatus.withdrawVoteCount}/{yieldStatus.votesNeeded}
+                        </Text>
+                        <Text className="text-xs text-orange-600">
+                          {yieldStatus.userHasVotedWithdraw
+                            ? "You voted. Waiting for others..."
+                            : "Vote below to approve withdrawal."}
+                        </Text>
+                      </View>
+                      {!yieldStatus.userHasVotedWithdraw && (
+                        <Pressable
+                          onPress={async () => {
+                            setYieldLoading(true);
+                            try {
+                              const walletClient = await getWalletClient();
+                              const hash = await walletClient.writeContract({
+                                address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+                                abi: YIELD_MANAGER_ABI,
+                                functionName: "voteWithdraw",
+                                args: [BigInt(groupId), true],
+                              });
+                              await getPublicClient().waitForTransactionReceipt({ hash });
+                              Alert.alert("Voted", "Your withdrawal vote has been recorded.");
+                              loadGroup();
+                            } catch (e: any) {
+                              Alert.alert("Error", e.message ?? "Failed to vote");
+                            } finally {
+                              setYieldLoading(false);
+                            }
+                          }}
+                          disabled={yieldLoading}
+                          className={`border border-orange-400 rounded-xl py-3 items-center ${yieldLoading ? "opacity-50" : ""}`}
+                        >
+                          {yieldLoading ? (
+                            <ActivityIndicator color="#ea580c" />
+                          ) : (
+                            <Text className="text-orange-600 font-semibold">Vote to Withdraw</Text>
+                          )}
+                        </Pressable>
+                      )}
+                    </>
+                  )}
+                  {yieldStatus.phase === 5 && ( /* WithdrawApproved — can execute */
+                    <>
+                      <View className="bg-green-50 rounded-xl p-4">
+                        <Text className="text-sm text-green-800 font-medium mb-1">
+                          Withdrawal Approved
+                        </Text>
+                        <Text className="text-xs text-green-600">
+                          All votes received. Tap Execute to withdraw funds.
+                        </Text>
+                      </View>
+                      <Pressable
+                        onPress={async () => {
+                          setYieldLoading(true);
+                          try {
+                            const result = await withdrawYield(Number(groupId));
+                            Alert.alert(
+                              "Withdrawn",
+                              `Returned ${result.returnedAmount} USDC\nYield earned: ${result.yieldEarned} USDC`
+                            );
+                            loadGroup();
+                          } catch (e: any) {
+                            Alert.alert("Error", e.message ?? "Withdrawal failed");
+                          } finally {
+                            setYieldLoading(false);
+                          }
+                        }}
+                        disabled={yieldLoading}
+                        className={`${yieldLoading ? "bg-red-400" : "bg-red-600"} rounded-xl py-3 items-center`}
+                      >
+                        <Text className="text-white font-semibold">
+                          {yieldLoading ? "Withdrawing..." : "Execute Withdrawal"}
+                        </Text>
+                      </Pressable>
+                    </>
+                  )}
+                </View>
+
+                {yieldStatus.lastUpdated > 0 && (
+                  <Text className="text-xs text-gray-400 text-center mt-4">
+                    Last updated: {new Date(yieldStatus.lastUpdated * 1000).toLocaleString()}
+                  </Text>
+                )}
               </>
             )}
           </>

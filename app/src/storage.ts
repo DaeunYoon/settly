@@ -73,3 +73,109 @@ export async function createInviteToken(
   const data = await res.json();
   return data.token;
 }
+
+// ─── Yield Farming API ──────────────────────────────────────
+
+// Phase enum: 0=Idle, 1=EnableVoting, 2=EnableApproved, 3=Active, 4=WithdrawVoting, 5=WithdrawApproved
+export type YieldStatus = {
+  strategy: number;
+  phase: number;
+  bridgedAmount: string;
+  currentValue: string;
+  yieldPercent: string;
+  lastUpdated: number;
+  enableVoteCount: number;
+  withdrawVoteCount: number;
+  votesNeeded: number;
+  userHasVotedEnable: boolean;
+  userHasVotedWithdraw: boolean;
+  canPropose: boolean;
+  breakdown: {
+    strategy: number;
+    msUSDS_value: string;
+    msUSDe_value: string;
+    weth_value: string;
+    totalUsdcValue: string;
+  } | null;
+  swapTxs: Array<{
+    timestamp: string;
+    txHash: string;
+    tokenIn: string;
+    tokenOut: string;
+    amountIn: string;
+    amountOut: string;
+    explorerUrl: string;
+  }>;
+};
+
+export async function enableYield(
+  groupId: number,
+  strategy: number
+): Promise<{ success: boolean; bridgedAmount: string; swapTxs: unknown[] }> {
+  const res = await fetch(`${API_URL}/api/yield/enable`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ groupId: String(groupId), strategy }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Enable yield failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+export async function getYieldStatus(
+  groupId: number
+): Promise<YieldStatus> {
+  const res = await fetch(`${API_URL}/api/yield/status/${groupId}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Yield status failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+export async function withdrawYield(
+  groupId: number
+): Promise<{ success: boolean; returnedAmount: string; yieldEarned: string }> {
+  const res = await fetch(`${API_URL}/api/yield/withdraw`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ groupId: String(groupId) }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Yield withdraw failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+export async function topUpYield(
+  groupId: number
+): Promise<{ success: boolean; topUpAmount: string }> {
+  const res = await fetch(`${API_URL}/api/yield/topup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ groupId: String(groupId) }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Yield top-up failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+export async function simulateYield(
+  seconds: number
+): Promise<{ success: boolean; simulatedDays: string }> {
+  const res = await fetch(`${API_URL}/api/yield/simulate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seconds }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Yield simulate failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}

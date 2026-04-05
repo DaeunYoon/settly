@@ -89,10 +89,12 @@ export default function App() {
     if (isReady && pendingJoin.current) {
       const params = pendingJoin.current;
       pendingJoin.current = null;
-      // Small delay to let navigator mount
-      setTimeout(() => {
-        navRef.current?.navigate("JoinGroup", params);
-      }, 100);
+      // Wait for navigator to re-render with authenticated screens
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          navRef.current?.navigate("JoinGroup", params);
+        }, 300);
+      });
     }
   }, [isReady]);
 
