@@ -150,6 +150,21 @@ export async function withdrawYield(
   return res.json();
 }
 
+export async function topUpYield(
+  groupId: number
+): Promise<{ success: boolean; topUpAmount: string }> {
+  const res = await fetch(`${API_URL}/api/yield/topup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ groupId: String(groupId) }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Yield top-up failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
 export async function simulateYield(
   seconds: number
 ): Promise<{ success: boolean; simulatedDays: string }> {

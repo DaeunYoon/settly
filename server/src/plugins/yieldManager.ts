@@ -27,6 +27,7 @@ const YIELD_MANAGER_ABI = parseAbi([
   "function proposeEnableYield(uint256 groupId, uint8 strategy)",
   "function voteEnableYield(uint256 groupId, bool approve)",
   "function recordBridged(uint256 groupId, uint256 amount)",
+  "function recordTopUp(uint256 groupId, uint256 amount)",
   "function updateYieldBalance(uint256 groupId, uint256 currentValue)",
   "function proposeWithdraw(uint256 groupId)",
   "function voteWithdraw(uint256 groupId, bool approve)",
@@ -56,6 +57,7 @@ const GROUP_POT_ABI = parseAbi([
   "function isMember(uint256 groupId, address user) view returns (bool)",
   "function bridgeToYield(uint256 groupId, address recipient, uint256 amount)",
   "function returnFromYield(uint256 groupId, uint256 amount, address token)",
+  "function nextGroupId() view returns (uint256)",
 ]);
 
 // ─── Arc Testnet ────────────────────────────────────────────
@@ -547,5 +549,219 @@ export default fp(async function yieldManagerPlugin(fastify) {
     },
   );
 
-  fastify.log.info("Yield manager plugin registered");
+  /**
+   * POST /api/yield/topup
+   * Manually bridge new pot deposits into the active yield position
+   */
+  fastify.post<{ Body: { groupId: string } }>(
+    "/api/yield/topup",
+    async (request, reply) => {
+      const { groupId } = request.body;
+      const log = (step: string, data?: Record<string, unknown>) =>
+        fastify.log.info({ groupId, step, ...data }, `[yield/topup] ${step}`);
+
+      try {
+        // 1. Check yield is Active
+        const yieldInfo = await arcPublic.readContract({
+          address: YIELD_MANAGER_ADDRESS,
+          abi: YIELD_MANAGER_ABI,
+          functionName: "getYieldInfo",
+          args: [BigInt(groupId)],
+        });
+        const phase = Number(yieldInfo[1]);
+        const strategy = Number(yieldInfo[0]);
+        if (phase !== 3) {
+          return reply.status(400).send({ error: "Yield is not active for this group" });
+        }
+
+        // 2. Check pot has balance
+        const [potBalance] = await arcPublic.readContract({
+          address: GROUP_POT_ADDRESS,
+          abi: GROUP_POT_ABI,
+          functionName: "getPotInfo",
+          args: [BigInt(groupId)],
+        });
+        if (potBalance === 0n) {
+          return reply.status(400).send({ error: "No new deposits in pot to top up" });
+        }
+        log("start", { amount: formatUnits(potBalance, 6), strategy });
+
+        // 3. Check pocket has enough USDC on Base
+        const pocketBalance = await basePublic.readContract({
+          address: USDC_BASE_ADDRESS,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [baseAccount.address],
+        });
+        if (pocketBalance < potBalance) {
+          return reply.status(400).send({
+            error: `Insufficient USDC on Base Sepolia. Need ${formatUnits(potBalance, 6)}, have ${formatUnits(pocketBalance, 6)}.`,
+          });
+        }
+
+        // 4. Bridge out from Arc GroupPot
+        log("bridge_out");
+        const bridgeHash = await arcWallet.writeContract({
+          address: GROUP_POT_ADDRESS,
+          abi: GROUP_POT_ABI,
+          functionName: "bridgeToYield",
+          args: [BigInt(groupId), arcAccount.address, potBalance],
+        });
+        await arcPublic.waitForTransactionReceipt({ hash: bridgeHash });
+        log("bridge_out:OK", { tx: bridgeHash });
+
+        // 5. Approve + deposit into YieldStrategy on Base
+        log("approve");
+        const approveHash = await baseWallet.writeContract({
+          address: USDC_BASE_ADDRESS,
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [YIELD_STRATEGY_ADDRESS, potBalance],
+        });
+        await basePublic.waitForTransactionReceipt({ hash: approveHash });
+
+        log("deposit");
+        const depositHash = await baseWallet.writeContract({
+          address: YIELD_STRATEGY_ADDRESS,
+          abi: YIELD_STRATEGY_ABI,
+          functionName: "deposit",
+          args: [potBalance, strategy, BigInt(groupId)],
+        });
+        await basePublic.waitForTransactionReceipt({ hash: depositHash });
+        log("deposit:OK", { tx: depositHash });
+
+        // 6. Update bridgedAmount on Arc YieldManager
+        log("update_balance");
+        const currentBridged = yieldInfo[2] as bigint;
+        const newTotal = currentBridged + potBalance;
+        const updateHash = await arcWallet.writeContract({
+          address: YIELD_MANAGER_ADDRESS,
+          abi: YIELD_MANAGER_ABI,
+          functionName: "updateYieldBalance",
+          args: [BigInt(groupId), newTotal],
+        });
+        await arcPublic.waitForTransactionReceipt({ hash: updateHash });
+        log("COMPLETE", { topUpAmount: formatUnits(potBalance, 6) });
+
+        return {
+          success: true,
+          topUpAmount: formatUnits(potBalance, 6),
+          depositTx: depositHash,
+        };
+      } catch (err) {
+        fastify.log.error({ groupId, err: String(err) }, `[yield/topup] FAILED: ${err}`);
+        return reply.status(500).send({ error: "Top-up failed", details: String(err) });
+      }
+    },
+  );
+
+  // ─── Auto-Bridge Bot ──────────────────────────────────────
+  // Periodically scans all groups: if yield is Active and the pot has a balance,
+  // bridges the new funds and deposits them into the existing yield position.
+
+  const TOP_UP_INTERVAL_MS = 60_000; // 60 seconds
+  const MIN_TOP_UP = 100_000n; // 0.1 USDC — skip dust
+
+  async function runTopUpScan() {
+    try {
+      const groupCount = await arcPublic.readContract({
+        address: GROUP_POT_ADDRESS,
+        abi: GROUP_POT_ABI,
+        functionName: "nextGroupId",
+      });
+
+      for (let gId = 1n; gId <= groupCount; gId++) {
+        try {
+          // Check if yield is Active (phase == 3)
+          const yieldInfo = await arcPublic.readContract({
+            address: YIELD_MANAGER_ADDRESS,
+            abi: YIELD_MANAGER_ABI,
+            functionName: "getYieldInfo",
+            args: [gId],
+          });
+          const phase = Number(yieldInfo[1]);
+          const strategy = Number(yieldInfo[0]);
+          if (phase !== 3) continue; // Only top-up Active positions
+
+          // Check pot balance on Arc
+          const [potBalance] = await arcPublic.readContract({
+            address: GROUP_POT_ADDRESS,
+            abi: GROUP_POT_ABI,
+            functionName: "getPotInfo",
+            args: [gId],
+          });
+          if (potBalance < MIN_TOP_UP) continue; // Skip dust or empty pots
+
+          fastify.log.info({ groupId: gId.toString(), amount: formatUnits(potBalance, 6) },
+            "[yield/auto-topup] New deposit detected, bridging...");
+
+          // Check pocket EOA has enough USDC on Base
+          const pocketBalance = await basePublic.readContract({
+            address: USDC_BASE_ADDRESS,
+            abi: ERC20_ABI,
+            functionName: "balanceOf",
+            args: [baseAccount.address],
+          });
+          if (pocketBalance < potBalance) {
+            fastify.log.warn({ groupId: gId.toString(), needed: formatUnits(potBalance, 6), have: formatUnits(pocketBalance, 6) },
+              "[yield/auto-topup] Insufficient pocket USDC on Base, skipping");
+            continue;
+          }
+
+          // 1. Bridge out from Arc GroupPot
+          const bridgeHash = await arcWallet.writeContract({
+            address: GROUP_POT_ADDRESS,
+            abi: GROUP_POT_ABI,
+            functionName: "bridgeToYield",
+            args: [gId, arcAccount.address, potBalance],
+          });
+          await arcPublic.waitForTransactionReceipt({ hash: bridgeHash });
+
+          // 2. Approve + deposit into YieldStrategy on Base
+          const approveHash = await baseWallet.writeContract({
+            address: USDC_BASE_ADDRESS,
+            abi: ERC20_ABI,
+            functionName: "approve",
+            args: [YIELD_STRATEGY_ADDRESS, potBalance],
+          });
+          await basePublic.waitForTransactionReceipt({ hash: approveHash });
+
+          const depositHash = await baseWallet.writeContract({
+            address: YIELD_STRATEGY_ADDRESS,
+            abi: YIELD_STRATEGY_ABI,
+            functionName: "deposit",
+            args: [potBalance, strategy, gId],
+          });
+          await basePublic.waitForTransactionReceipt({ hash: depositHash });
+
+          // 3. Record top-up on Arc YieldManager
+          const recordHash = await arcWallet.writeContract({
+            address: YIELD_MANAGER_ADDRESS,
+            abi: YIELD_MANAGER_ABI,
+            functionName: "recordTopUp",
+            args: [gId, potBalance],
+          });
+          await arcPublic.waitForTransactionReceipt({ hash: recordHash });
+
+          fastify.log.info({ groupId: gId.toString(), amount: formatUnits(potBalance, 6), depositTx: depositHash },
+            "[yield/auto-topup] Top-up complete");
+        } catch (groupErr) {
+          fastify.log.error({ groupId: gId.toString(), err: String(groupErr) },
+            "[yield/auto-topup] Failed for group");
+        }
+      }
+    } catch (err) {
+      fastify.log.error({ err: String(err) }, "[yield/auto-topup] Scan failed");
+    }
+  }
+
+  const topUpTimer = setInterval(runTopUpScan, TOP_UP_INTERVAL_MS);
+  // Run once on startup after a short delay
+  setTimeout(runTopUpScan, 5_000);
+
+  fastify.addHook("onClose", () => {
+    clearInterval(topUpTimer);
+  });
+
+  fastify.log.info("Yield manager plugin registered (auto-topup bot enabled, interval: 60s)");
 });

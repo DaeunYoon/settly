@@ -25,7 +25,7 @@ import {
   ERC20_ABI,
 } from "../contracts";
 import { formatUnits, parseUnits, keccak256, encodePacked } from "viem";
-import { API_URL, getInviteCode, saveInviteCode, deleteInviteCode, createInviteToken, enableYield, getYieldStatus, withdrawYield, type YieldStatus } from "../storage";
+import { API_URL, getInviteCode, saveInviteCode, deleteInviteCode, createInviteToken, enableYield, getYieldStatus, withdrawYield, topUpYield, type YieldStatus } from "../storage";
 import { YIELD_CONTRACTS, YIELD_MANAGER_ABI } from "../contracts";
 import { useGroupEvents } from "../hooks/useGroupEvents";
 
@@ -639,8 +639,10 @@ export default function GroupDetailScreen() {
         </Pressable>
         <Text className="text-2xl font-bold text-gray-900">{group.name}</Text>
         <Text className="text-sm text-gray-500">
-          {formatUnits(group.potBalance, 6)} {currencySymbol(group.baseCurrency)}{" "}
-          in pot · {group.members.length} members
+          {yieldStatus?.phase === 2 && group.potBalance === 0n
+            ? "Bridging funds to yield..."
+            : `${formatUnits(group.potBalance, 6)} ${currencySymbol(group.baseCurrency)} in pot`
+          } · {group.members.length} members
         </Text>
       </View>
 
@@ -938,7 +940,25 @@ export default function GroupDetailScreen() {
         {/* ─── Yield Tab ─── */}
         {tab === "yield" && (
           <>
-            {(!yieldStatus || yieldStatus.canPropose || yieldStatus.phase === 1) ? (
+            {yieldLoading && (
+              <View className="bg-purple-100 rounded-xl px-4 py-3 mb-3 flex-row items-center">
+                <ActivityIndicator size="small" color="#9333ea" />
+                <Text className="text-purple-700 text-sm font-medium ml-2">
+                  Processing yield transaction...
+                </Text>
+              </View>
+            )}
+            {yieldStatus?.phase === 2 ? (
+              <View className="bg-purple-50 rounded-xl p-6 items-center mt-4">
+                <ActivityIndicator size="large" color="#9333ea" />
+                <Text className="text-lg font-semibold text-purple-800 mt-4">
+                  Bridging Funds to Yield
+                </Text>
+                <Text className="text-sm text-purple-600 mt-2 text-center">
+                  Your funds are being bridged to Base Sepolia and deposited into the yield strategy. This may take a minute.
+                </Text>
+              </View>
+            ) : (!yieldStatus || yieldStatus.canPropose || yieldStatus.phase === 1) ? (
               <>
                 <Text className="font-semibold text-gray-900 mb-1">Yield Farming</Text>
                 <Text className="text-sm text-gray-500 mb-4">
@@ -1229,7 +1249,7 @@ export default function GroupDetailScreen() {
                       { label: "6M", days: 180 },
                       { label: "1Y", days: 365 },
                     ].map((period) => {
-                      const apyByStrategy: Record<number, number> = { 0: 0.0375, 1: 0.055, 2: 0.055 };
+                      const apyByStrategy: Record<number, number> = { 0: 0.0375, 1: 0.06125, 2: 0.0375 };
                       const apy = apyByStrategy[yieldStatus.strategy] ?? 0.0375;
                       const deposited = Number(yieldStatus.bridgedAmount);
                       const projected = deposited * (1 + apy * period.days / 365);
@@ -1251,7 +1271,7 @@ export default function GroupDetailScreen() {
                     })}
                   </View>
                   {(() => {
-                    const apyByStrategy: Record<number, number> = { 0: 0.0375, 1: 0.055, 2: 0.055 };
+                    const apyByStrategy: Record<number, number> = { 0: 0.0375, 1: 0.06125, 2: 0.0375 };
                     const apy = apyByStrategy[yieldStatus.strategy] ?? 0.0375;
                     const deposited = Number(yieldStatus.bridgedAmount);
                     const projected = deposited * (1 + apy * projectionDays / 365);
