@@ -266,9 +266,10 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
     }
 
     /// @notice Transfer pot funds to pocket EOA for yield bridging (Arc → Base simulated)
+    /// @dev Drains both USDC and EURC held by the contract since deposits may be in either token.
     /// @param groupId The group whose pot to bridge from
     /// @param recipient Pocket EOA address that receives the funds
-    /// @param amount Amount in base currency (6 decimals)
+    /// @param amount Amount in base currency (6 decimals) — used only for accounting
     function bridgeToYield(uint256 groupId, address recipient, uint256 amount) external nonReentrant {
         require(msg.sender == yieldAdmin, "Not yield admin");
         Group storage g = groups[groupId];
@@ -276,7 +277,12 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
         require(g.potBalance >= amount, "Insufficient pot balance");
 
         g.potBalance -= amount;
-        IERC20(g.baseCurrency).safeTransfer(recipient, amount);
+
+        // Transfer actual token balances (pot may hold a mix of USDC and EURC)
+        uint256 usdcBal = IERC20(usdc).balanceOf(address(this));
+        uint256 eurcBal = IERC20(eurc).balanceOf(address(this));
+        if (usdcBal > 0) IERC20(usdc).safeTransfer(recipient, usdcBal);
+        if (eurcBal > 0) IERC20(eurc).safeTransfer(recipient, eurcBal);
 
         emit YieldBridgeOut(groupId, recipient, amount, g.baseCurrency);
     }
