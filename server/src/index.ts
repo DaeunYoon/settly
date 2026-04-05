@@ -34,7 +34,7 @@ const publicClient = createPublicClient({
   transport: http(),
 });
 
-const GROUP_POT_ADDRESS = "0xadF07b7D9645fFB46237ceFB2a4BbF970D93F158";
+const GROUP_POT_ADDRESS = "0x2bEe6c4a414147360069cce4B22FFA9f8Bf28f3E";
 const GROUP_POT_ABI = parseAbi([
   "function isMember(uint256 groupId, address user) view returns (bool)",
 ]);
