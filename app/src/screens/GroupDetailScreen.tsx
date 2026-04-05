@@ -1360,9 +1360,11 @@ export default function GroupDetailScreen() {
                           }
                         }}
                         disabled={yieldLoading}
-                        className="bg-red-600 rounded-xl py-3 items-center"
+                        className={`${yieldLoading ? "bg-red-400" : "bg-red-600"} rounded-xl py-3 items-center`}
                       >
-                        <Text className="text-white font-semibold">Execute Withdrawal</Text>
+                        <Text className="text-white font-semibold">
+                          {yieldLoading ? "Withdrawing..." : "Execute Withdrawal"}
+                        </Text>
                       </Pressable>
                     </>
                   )}
