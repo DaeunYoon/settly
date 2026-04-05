@@ -10,11 +10,13 @@ import {
   parseAbi,
 } from "viem";
 import ratePusher from "./plugins/ratePusher";
+import yieldManager from "./plugins/yieldManager";
 
 const app = Fastify({ logger: true });
 
 app.register(cors);
 app.register(ratePusher);
+app.register(yieldManager);
 
 // ─── On-chain membership verification ───────────────────────
 
@@ -32,7 +34,7 @@ const publicClient = createPublicClient({
   transport: http(),
 });
 
-const GROUP_POT_ADDRESS = "0xFe48DA5dE72879F7c7897aEb48D3D9450d025153";
+const GROUP_POT_ADDRESS = "0xadF07b7D9645fFB46237ceFB2a4BbF970D93F158";
 const GROUP_POT_ABI = parseAbi([
   "function isMember(uint256 groupId, address user) view returns (bool)",
 ]);

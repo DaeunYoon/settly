@@ -250,6 +250,54 @@ contract GroupPot is IGroupPot, ReentrancyGuard {
         _tryRelease(groupId, requestId);
     }
 
+    // ─── Yield Bridge ─────────────────────────────────────────────
+    // Simulated bridge: transfers to/from a pocket EOA.
+    // TODO: Replace with real CCTP bridge (TokenMessenger.depositForBurn / receiveMessage).
+    //       The interface stays the same — only the recipient changes from EOA to BridgeManager.
+
+    address public yieldAdmin; // Backend wallet authorized to bridge funds for yield
+
+    event YieldBridgeOut(uint256 indexed groupId, address recipient, uint256 amount, address token);
+    event YieldBridgeIn(uint256 indexed groupId, uint256 amount, address token, uint256 convertedAmount);
+
+    function setYieldAdmin(address _admin) external {
+        require(yieldAdmin == address(0) || msg.sender == yieldAdmin, "Not authorized");
+        yieldAdmin = _admin;
+    }
+
+    /// @notice Transfer pot funds to pocket EOA for yield bridging (Arc → Base simulated)
+    /// @param groupId The group whose pot to bridge from
+    /// @param recipient Pocket EOA address that receives the funds
+    /// @param amount Amount in base currency (6 decimals)
+    function bridgeToYield(uint256 groupId, address recipient, uint256 amount) external nonReentrant {
+        require(msg.sender == yieldAdmin, "Not yield admin");
+        Group storage g = groups[groupId];
+        require(!g.closed, "Group is closed");
+        require(g.potBalance >= amount, "Insufficient pot balance");
+
+        g.potBalance -= amount;
+        IERC20(g.baseCurrency).safeTransfer(recipient, amount);
+
+        emit YieldBridgeOut(groupId, recipient, amount, g.baseCurrency);
+    }
+
+    /// @notice Return funds from yield back to pot (Base → Arc simulated)
+    /// @param groupId The group whose pot to return funds to
+    /// @param amount Amount of token being returned
+    /// @param token USDC or EURC address
+    function returnFromYield(uint256 groupId, uint256 amount, address token) external nonReentrant {
+        require(msg.sender == yieldAdmin, "Not yield admin");
+        require(token == usdc || token == eurc, "Invalid token");
+        Group storage g = groups[groupId];
+
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+
+        uint256 converted = _convertToBase(amount, token, g.baseCurrency);
+        g.potBalance += converted;
+
+        emit YieldBridgeIn(groupId, amount, token, converted);
+    }
+
     // ─── Withdraw / Close ────────────────────────────────────────
 
     function voteWithdraw(uint256 groupId) external onlyMember(groupId) groupOpen(groupId) nonReentrant {

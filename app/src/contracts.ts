@@ -3,7 +3,7 @@ import { parseAbi } from "viem";
 // Arc Testnet deployed addresses
 export const CONTRACTS = {
   FX_ORACLE: "0x545BD434404CA7F8F6aD86d86d8e3a2297b14616",
-  GROUP_POT: "0x2bEe6c4a414147360069cce4B22FFA9f8Bf28f3E",
+  GROUP_POT: "0xadF07b7D9645fFB46237ceFB2a4BbF970D93F158",
   SPLIT_SETTLER: "0x454017Cc37Ce3574B2aB16a8567c69E884E64451",
   USDC: "0x3600000000000000000000000000000000000000",
   EURC: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
@@ -59,6 +59,11 @@ export const GROUP_POT_ABI = parseAbi([
   "event RequestCancelled(uint256 indexed groupId, uint256 requestId)",
   "event InviteCodeUpdated(uint256 indexed groupId, address updatedBy)",
   "event PotClosed(uint256 indexed groupId)",
+  "function bridgeToYield(uint256 groupId, address recipient, uint256 amount)",
+  "function returnFromYield(uint256 groupId, uint256 amount, address token)",
+  "function setYieldAdmin(address _admin)",
+  "event YieldBridgeOut(uint256 indexed groupId, address recipient, uint256 amount, address token)",
+  "event YieldBridgeIn(uint256 indexed groupId, uint256 amount, address token, uint256 convertedAmount)",
 ]);
 
 export const SPLIT_SETTLER_ABI = parseAbi([
@@ -78,4 +83,42 @@ export const ERC20_ABI = parseAbi([
   "function balanceOf(address account) view returns (uint256)",
   "function decimals() view returns (uint8)",
   "function symbol() view returns (string)",
+]);
+
+// ─── Yield Farming (Arc Testnet + Base Sepolia) ─────────────
+
+// Placeholder addresses — update after deployment
+export const YIELD_CONTRACTS = {
+  // Arc Testnet
+  YIELD_MANAGER: "0x0196e5D2943B8764e707D96bD1C5c729A0751F2A",
+  // Base Sepolia
+  YIELD_STRATEGY: "0x44c6387dDD97c45cda06687890d1F8C9564A5427",
+  SUSDS_VAULT: "0xFC9d0a3cc342E5E1e3Dd67E4DC6fE47f1e219BD4",  // accepts USDC, 3.75% APY
+  SUSDE_VAULT: "0x2B4F88D09B00CB9D0A157c0E09f0d52438c31f05",  // accepts USDC, 7.5% APY
+  USDC_BASE: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  WETH_BASE: "0x4200000000000000000000000000000000000006",
+} as const;
+
+export const BASE_SEPOLIA = {
+  id: 84532,
+  name: "Base Sepolia",
+  rpcUrl: "https://sepolia.base.org",
+} as const;
+
+export const YIELD_MANAGER_ABI = parseAbi([
+  "function proposeEnableYield(uint256 groupId, uint8 strategy)",
+  "function voteEnableYield(uint256 groupId, bool approve)",
+  "function proposeWithdraw(uint256 groupId)",
+  "function voteWithdraw(uint256 groupId, bool approve)",
+  "function isWithdrawalApproved(uint256 groupId) view returns (bool)",
+  "function getYieldInfo(uint256 groupId) view returns (uint8 strategy, uint8 phase, uint256 bridgedAmount, uint256 currentValue)",
+  "function getYieldVotes(uint256 groupId) view returns (uint256 lastUpdated, uint256 enableVoteCount, uint256 withdrawVoteCount, uint256 votesNeeded)",
+  "function hasVotedCurrentEnable(uint256 groupId, address member) view returns (bool)",
+  "function hasVotedCurrentWithdraw(uint256 groupId, address member) view returns (bool)",
+  "function canProposeYield(uint256 groupId) view returns (bool)",
+  "event YieldProposed(uint256 indexed groupId, uint8 strategy, address proposer)",
+  "event YieldEnabled(uint256 indexed groupId, uint8 strategy, uint256 bridgedAmount)",
+  "event YieldBalanceUpdated(uint256 indexed groupId, uint256 currentValue)",
+  "event WithdrawalProposed(uint256 indexed groupId, address proposer)",
+  "event WithdrawalExecuted(uint256 indexed groupId, uint256 returnedAmount)",
 ]);
