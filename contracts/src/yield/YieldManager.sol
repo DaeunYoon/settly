@@ -230,6 +230,11 @@ contract YieldManager {
         delete yieldStates[groupId];
     }
 
+    /// @notice Admin force-reset yield state to Idle (recovery for redeployments)
+    function forceResetYield(uint256 groupId) external onlyAdmin {
+        delete yieldStates[groupId];
+    }
+
     /// @notice Backend records that withdrawal is complete
     function recordWithdrawal(uint256 groupId, uint256 returnedAmount) external onlyAdmin {
         YieldState storage state = yieldStates[groupId];

@@ -5,13 +5,22 @@ import {
   http,
   parseAbi,
   formatUnits,
+  defineChain,
   type Chain,
   type Hex,
 } from "viem";
 import { privateKeyToAccount, nonceManager } from "viem/accounts";
-import { executeSwap } from "../services/uniswapSwap";
-import { baseSepolia } from "../services/uniswapSwap";
 
+export const baseSepolia = defineChain({
+  id: 84532,
+  name: "Base Sepolia",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: {
+    default: { http: [process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org"] },
+  },
+  blockExplorers: {
+    default: { name: "BaseScan", url: "https://sepolia.basescan.org" },  },
+});
 // ─── ABIs ───────────────────────────────────────────────────
 
 const YIELD_MANAGER_ABI = parseAbi([
@@ -97,20 +106,6 @@ export default fp(async function yieldManagerPlugin(fastify) {
   const basePublic = createPublicClient({ chain: baseSepolia, transport: http(baseRpc) });
   const baseWallet = createWalletClient({ account: baseAccount, chain: baseSepolia, transport: http(baseRpc) });
 
-  // ─── Swap transaction log (for Uniswap prize submission) ──
-
-  const swapTxLog: Array<{
-    timestamp: string;
-    groupId: string;
-    strategy: number;
-    txHash: string;
-    tokenIn: string;
-    tokenOut: string;
-    amountIn: string;
-    amountOut: string;
-    explorerUrl: string;
-  }> = [];
-
   // ─── Routes ───────────────────────────────────────────────
 
   /**
@@ -193,8 +188,8 @@ export default fp(async function yieldManagerPlugin(fastify) {
         log("4_bridge_out_arc:OK", { tx: bridgeOutHash });
         completedStep = "4_bridge_out_arc";
 
-        // Step 5: Approve YieldStrategy to spend USDC on Base
-        log("5_approve_yield_strategy");
+        // Step 5: Approve YieldStrategy to spend USDC
+        log("5_approve_yield_strategy", { balance: formatUnits(balance, 6) });
         const approveHash = await baseWallet.writeContract({
           address: USDC_BASE_ADDRESS,
           abi: ERC20_ABI,
@@ -206,7 +201,7 @@ export default fp(async function yieldManagerPlugin(fastify) {
         completedStep = "5_approve_yield_strategy";
 
         // Step 6: Deposit into YieldStrategy on Base Sepolia
-        log("6_deposit_yield_strategy");
+        log("6_deposit_yield_strategy", { balance: formatUnits(balance, 6) });
         const depositHash = await baseWallet.writeContract({
           address: YIELD_STRATEGY_ADDRESS,
           abi: YIELD_STRATEGY_ABI,
@@ -217,38 +212,8 @@ export default fp(async function yieldManagerPlugin(fastify) {
         log("6_deposit_yield_strategy:OK", { tx: depositHash });
         completedStep = "6_deposit_yield_strategy";
 
-        // Step 7: Aggressive strategy — swap half to WETH via Uniswap
-        if (strategy === 2) {
-          log("7_uniswap_swap");
-          try {
-            const wethAddress = process.env.WETH_BASE_ADDRESS || "0x4200000000000000000000000000000000000006";
-            const halfBalance = (balance / 2n).toString();
-            const swapResult = await executeSwap(
-              USDC_BASE_ADDRESS,
-              wethAddress,
-              halfBalance,
-            );
-            swapTxLog.push({
-              timestamp: new Date().toISOString(),
-              groupId,
-              strategy,
-              txHash: swapResult.txHash,
-              tokenIn: swapResult.tokenIn,
-              tokenOut: swapResult.tokenOut,
-              amountIn: swapResult.amountIn,
-              amountOut: swapResult.amountOut,
-              explorerUrl: swapResult.explorerUrl,
-            });
-            log("7_uniswap_swap:OK", { tx: swapResult.txHash, amountOut: swapResult.amountOut });
-          } catch (swapErr) {
-            log("7_uniswap_swap:FAILED", { error: String(swapErr) });
-            fastify.log.warn(`Uniswap swap failed (non-critical): ${swapErr}`);
-          }
-          completedStep = "7_uniswap_swap";
-        }
-
-        // Step 8: Record bridge on Arc's YieldManager
-        log("8_record_bridged");
+        // Step 7: Record bridge on Arc's YieldManager
+        log("7_record_bridged");
         const recordHash = await arcWallet.writeContract({
           address: YIELD_MANAGER_ADDRESS,
           abi: YIELD_MANAGER_ABI,
@@ -256,8 +221,8 @@ export default fp(async function yieldManagerPlugin(fastify) {
           args: [BigInt(groupId), balance],
         });
         await arcPublic.waitForTransactionReceipt({ hash: recordHash });
-        log("8_record_bridged:OK", { tx: recordHash });
-        completedStep = "8_record_bridged";
+        log("7_record_bridged:OK", { tx: recordHash });
+        completedStep = "7_record_bridged";
 
         log("COMPLETE", { bridgedAmount: formatUnits(balance, 6) });
 
@@ -267,7 +232,6 @@ export default fp(async function yieldManagerPlugin(fastify) {
           strategy,
           depositTx: depositHash,
           bridgeRecordTx: recordHash,
-          swapTxs: swapTxLog.filter((t) => t.groupId === groupId),
         };
       } catch (err) {
         fastify.log.error({ groupId, strategy, completedStep, err: String(err) },
@@ -388,7 +352,6 @@ export default fp(async function yieldManagerPlugin(fastify) {
           withdrawVoteCount: Number(withdrawVoteCount),
           votesNeeded: Number(votesNeeded),
           breakdown,
-          swapTxs: swapTxLog.filter((t) => t.groupId === groupId),
         };
       } catch (err) {
         fastify.log.error({ groupId: request.params.groupId, err: String(err) },
@@ -583,17 +546,6 @@ export default fp(async function yieldManagerPlugin(fastify) {
       }
     },
   );
-
-  /**
-   * GET /api/yield/swap-log
-   * Get all Uniswap swap transaction IDs (for prize submission)
-   */
-  fastify.get("/api/yield/swap-log", async () => {
-    return {
-      totalSwaps: swapTxLog.length,
-      swaps: swapTxLog,
-    };
-  });
 
   fastify.log.info("Yield manager plugin registered");
 });

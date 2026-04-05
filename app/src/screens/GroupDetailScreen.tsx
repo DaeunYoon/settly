@@ -1016,10 +1016,30 @@ export default function GroupDetailScreen() {
                           args: [BigInt(groupId), strategy],
                         });
                         await getPublicClient().waitForTransactionReceipt({ hash: proposeHash });
-                        Alert.alert(
-                          "Yield Proposal Created",
-                          `You proposed the ${strategyName} strategy. Other members need to vote to enable yield farming.`
-                        );
+
+                        // Check if the proposal auto-passed (e.g. single-member group)
+                        const postProposeInfo = await getPublicClient().readContract({
+                          address: YIELD_CONTRACTS.YIELD_MANAGER as `0x${string}`,
+                          abi: YIELD_MANAGER_ABI,
+                          functionName: "getYieldInfo",
+                          args: [BigInt(groupId)],
+                        });
+                        const [postStrategy, postPhase] = postProposeInfo;
+                        if (postPhase >= 2) {
+                          // Vote auto-passed — trigger backend enable
+                          justVotedRef.current = true;
+                          try {
+                            await enableYield(Number(groupId), Number(postStrategy));
+                          } catch {
+                            // backend enable may fail, but vote already passed on-chain
+                          }
+                          Alert.alert("Yield Enabled", `${strategyName} strategy is now being activated.`);
+                        } else {
+                          Alert.alert(
+                            "Yield Proposal Created",
+                            `You proposed the ${strategyName} strategy. Other members need to vote to enable yield farming.`
+                          );
+                        }
                       } else if (yieldStatus.enableVoteCount < yieldStatus.votesNeeded) {
                         // Vote pending, need more votes — vote yes
                         const voteHash = await walletClient.writeContract({
@@ -1287,9 +1307,13 @@ export default function GroupDetailScreen() {
                         }
                       }}
                       disabled={yieldLoading}
-                      className="border border-red-300 rounded-xl py-3 items-center"
+                      className={`border border-red-300 rounded-xl py-3 items-center ${yieldLoading ? "opacity-50" : ""}`}
                     >
-                      <Text className="text-red-500 font-semibold">Propose Withdrawal</Text>
+                      {yieldLoading ? (
+                        <ActivityIndicator color="#ef4444" />
+                      ) : (
+                        <Text className="text-red-500 font-semibold">Propose Withdrawal</Text>
+                      )}
                     </Pressable>
                   )}
                   {yieldStatus.phase === 4 && ( /* WithdrawVoting — members vote */
@@ -1326,9 +1350,13 @@ export default function GroupDetailScreen() {
                             }
                           }}
                           disabled={yieldLoading}
-                          className="border border-orange-400 rounded-xl py-3 items-center"
+                          className={`border border-orange-400 rounded-xl py-3 items-center ${yieldLoading ? "opacity-50" : ""}`}
                         >
-                          <Text className="text-orange-600 font-semibold">Vote to Withdraw</Text>
+                          {yieldLoading ? (
+                            <ActivityIndicator color="#ea580c" />
+                          ) : (
+                            <Text className="text-orange-600 font-semibold">Vote to Withdraw</Text>
+                          )}
                         </Pressable>
                       )}
                     </>

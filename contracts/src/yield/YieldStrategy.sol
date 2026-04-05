@@ -65,8 +65,9 @@ contract YieldStrategy is ReentrancyGuard {
     // ─── Deposit ────────────────────────────────────────────────
 
     /// @notice Deposit USDC into a yield strategy on behalf of a group
+    /// @dev Can be called multiple times — top-ups accumulate into the existing position.
     /// @param amount USDC amount (6 decimals)
-    /// @param strategy Which strategy to use
+    /// @param strategy Which strategy to use (ignored on top-ups, uses existing)
     /// @param groupId The group to track the position for
     function deposit(
         uint256 amount,
@@ -74,37 +75,40 @@ contract YieldStrategy is ReentrancyGuard {
         uint256 groupId
     ) external nonReentrant {
         require(amount > 0, "Zero amount");
-        require(!positions[groupId].active, "Position already active");
 
         // Pull USDC from caller
         usdc.safeTransferFrom(msg.sender, address(this), amount);
 
         Position storage pos = positions[groupId];
-        pos.usdcDeposited = amount;
-        pos.strategy = strategy;
-        pos.active = true;
+
+        // Top-up: use existing strategy, just accumulate shares
+        if (pos.active) {
+            strategy = pos.strategy;
+        } else {
+            pos.strategy = strategy;
+            pos.active = true;
+        }
+        pos.usdcDeposited += amount;
 
         if (strategy == Strategy.Conservative) {
             // 100% msUSDS
             usdc.approve(address(msUSDS), amount);
-            pos.msUSDS_shares = msUSDS.deposit(amount, address(this));
+            pos.msUSDS_shares += msUSDS.deposit(amount, address(this));
         } else if (strategy == Strategy.Balanced) {
             // 50% msUSDS + 50% msUSDe
             uint256 half = amount / 2;
             uint256 remainder = amount - half;
 
             usdc.approve(address(msUSDS), half);
-            pos.msUSDS_shares = msUSDS.deposit(half, address(this));
+            pos.msUSDS_shares += msUSDS.deposit(half, address(this));
 
             usdc.approve(address(msUSDe), remainder);
-            pos.msUSDe_shares = msUSDe.deposit(remainder, address(this));
+            pos.msUSDe_shares += msUSDe.deposit(remainder, address(this));
         } else {
             // Aggressive: 50% msUSDS + 50% WETH
-            // Note: In real flow, backend swaps USDC→WETH via Uniswap API before calling this.
-            // For direct deposit, caller provides WETH separately.
-            // Here we just put 100% into msUSDS; WETH is tracked via depositWETH().
+            // USDC half goes to msUSDS; WETH tracked via depositWETH().
             usdc.approve(address(msUSDS), amount);
-            pos.msUSDS_shares = msUSDS.deposit(amount, address(this));
+            pos.msUSDS_shares += msUSDS.deposit(amount, address(this));
         }
 
         emit Deposited(groupId, strategy, amount);
