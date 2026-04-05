@@ -8,7 +8,7 @@ import {MockYieldVault} from "../src/yield/MockYieldVault.sol";
 
 /// @notice Redeploy YieldManager (Arc) — run with Arc RPC
 contract RedeployYieldManager is Script {
-    address constant GROUP_POT = 0xadF07b7D9645fFB46237ceFB2a4BbF970D93F158;
+    address constant GROUP_POT = 0xa361e0D722cFca3ED426E0522E7eF56c0CC3Cfa6;
     address constant USDC = 0x3600000000000000000000000000000000000000;
     address constant EURC = 0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a;
     address constant FX_ORACLE = 0x545BD434404CA7F8F6aD86d86d8e3a2297b14616;
